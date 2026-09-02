@@ -26,8 +26,8 @@ def load_catalog(ctx) -> list[dict]:
     if not path:
         return [d for d in ctx.store.list("catalog")]
     p = Path(path) if Path(path).is_absolute() else ctx.cfg.root / path
-    if not p.exists():
-        return []
+    if not p.exists():  # catalogue file is runtime state; inside a sandbox it may be absent → fall back to the agent's own records
+        return [d for d in ctx.store.list("catalog")]
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else data.get("agents", [])
