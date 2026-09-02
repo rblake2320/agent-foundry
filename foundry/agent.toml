@@ -1,0 +1,49 @@
+# Agent Foundry — the agent that builds agents. Runs on agentkit like everything it builds.
+
+[agent]
+name = "Agent Foundry"
+slug = "agent-foundry"
+version = "1.0.0"
+description = "A worker whose standing job is building, verifying, packaging and cataloguing other course-spec worker agents from commissions."
+organization = "Agent Foundry"
+responsibility = "Turn a commission (a brief) into a verified, packaged, catalogued agent with its own Mission Control; never publish, deploy or launch without approval."
+audience = "Owners who want a real agent built to spec, and the Agent Seller that sells the catalogue."
+
+[model]
+backend = "ollama"
+ollama_model = "qwen3.8:27b"
+ollama_url = "http://localhost:11434"
+ollama_num_ctx = 24576
+claude_model = "sonnet"
+
+[limits]
+max_model_calls_per_run = 60
+max_tokens_per_run = 500000
+max_run_minutes = 90
+monthly_model_call_cap = 3000
+max_steps_per_task = 10
+max_tool_calls_per_task = 16
+tool_output_chars = 6000
+
+[tools]
+allowed = ["record_list", "record_get", "record_put", "read_file", "note_write", "current_time"]
+
+[approvals]
+actions = ["publish_agent", "deploy_agent", "launch_agent"]
+
+[schedule]
+time = "06:30"
+
+[paths]
+inbox = "reports"
+db = "data/foundry.db"
+ledger = "data/ledger.jsonl"
+
+[mission_control]
+host = "127.0.0.1"
+port = 8110
+
+[agent_data]
+products_dir = "../products"
+catalog_path = "../products/catalog.json"
+port_base = 8111

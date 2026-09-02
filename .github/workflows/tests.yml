@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  hermetic:
+    name: hermetic tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q --ignore=tests/test_e2e_mc.py
+      - name: foundry doctor (model checks are expected to fail on a runner)
+        run: python -m agentkit --root foundry doctor || true
+      - name: mission control boots and serves the agent card
+        shell: bash
+        run: |
+          python -m agentkit --root foundry mc --port 8199 > mc.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8199/api/status && break; sleep 1; done
+          curl -sf http://127.0.0.1:8199/.well-known/agent-card.json | python -c "import sys,json; c=json.load(sys.stdin); assert c['name']=='Agent Foundry'; print('card OK', [s['id'] for s in c['skills']])"

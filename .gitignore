@@ -1,0 +1,14 @@
+data/
+products/*/data/
+products/*/reports/
+products/*/.cache/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+scripts/run_*.cmd
+scripts/run_*.sh
+products/catalog.json
+products/published/
+products/.*keep/

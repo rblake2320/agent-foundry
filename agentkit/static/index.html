@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%99%3C/text%3E%3C/svg%3E">
+<style>
+:root{--bg:#0c0f13;--panel:#141a21;--line:#222c37;--ink:#e8edf2;--mute:#8d99a6;--acc:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--ok:#4ade80;--gold:#e9c46a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+header h1{font-size:16px;margin:0}header .st{font-size:12px;color:var(--mute)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--mute);margin-right:6px}.dot.on{background:var(--ok)}.dot.run{background:var(--acc);animation:p 1s infinite alternate}@keyframes p{to{opacity:.3}}
+nav{display:flex;gap:4px;padding:8px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+nav button{background:transparent;border:1px solid transparent;color:var(--mute);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}
+nav button.active{color:var(--ink);border-color:var(--line);background:var(--panel)}nav button.panel{color:var(--gold)}
+main{padding:16px 20px;max-width:1500px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.card h3{margin:0 0 6px;font-size:12px;color:var(--mute);font-weight:500;text-transform:uppercase;letter-spacing:.5px}
+.big{font-size:26px;font-weight:600}.sub{font-size:12px;color:var(--mute)}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;font-size:12px}
+tr:hover td{background:#10161d}code,.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.btn{background:#1b2531;border:1px solid var(--line);color:var(--ink);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}.btn:hover{border-color:var(--acc)}
+.btn.primary{background:var(--acc);color:#001;border-color:var(--acc)}.btn.danger{border-color:var(--bad);color:var(--bad)}.btn.ok{border-color:var(--ok);color:var(--ok)}.btn.sm{padding:3px 8px;font-size:12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select,input[type=text],textarea{background:#10161d;border:1px solid var(--line);color:var(--ink);padding:6px 8px;border-radius:6px;font-size:13px}
+textarea{width:100%;min-height:340px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.bar{height:8px;background:#10161d;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
+pre{background:#10161d;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.pill{display:inline-block;padding:2px 8px;border-radius:10px;background:#1b2531;font-size:11px;color:var(--mute);margin-right:4px}
+.muted{color:var(--mute)}.hidden{display:none}.toast{position:fixed;right:20px;bottom:20px;background:#1b2531;border:1px solid var(--acc);padding:10px 14px;border-radius:8px;font-size:13px;max-width:460px;z-index:9}
+.chat{display:flex;flex-direction:column;gap:8px}.msg{padding:10px 12px;border-radius:8px;background:#10161d;border:1px solid var(--line);white-space:pre-wrap}.msg.me{border-color:var(--acc)}
+.md{white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">⚙ Mission Control</h1>
+  <span class="st"><span id="dot" class="dot"></span><span id="hstate">connecting…</span></span>
+  <span class="st" id="hmodel"></span>
+  <span style="flex:1"></span>
+  <select id="taskSel" title="task to run"></select>
+  <button class="btn primary" id="runBtn" onclick="startRun()">▶ Run</button>
+  <button class="btn danger hidden" id="stopBtn" onclick="stopRun()">■ Stop</button>
+  <button class="btn" onclick="setToken()" title="X-Agent-Token for write actions">🔑</button>
+</header>
+<nav id="nav"></nav>
+<main id="main"></main>
+<div id="toast" class="toast hidden"></div>
+<script>
+const BASE=["Overview","Tasks","Runs","Approvals","Activity","Brain","Schedule","Doctor","Report","Chat"];
+let tab=localStorage.getItem("mc.tab")||"Overview", token=localStorage.getItem("mc.token")||"", cache={};
+const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const H=()=>({"Content-Type":"application/json",...(token?{"X-Agent-Token":token}:{})});
+async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let t=await r.text();try{t=JSON.parse(t).detail||t}catch{};throw new Error(r.status+" "+t)}return r.json()}
+function toast(m,ms=3500){const t=$("#toast");t.textContent=m;t.classList.remove("hidden");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.add("hidden"),ms)}
+function setToken(){const v=prompt("X-Agent-Token (only if AGENTKIT_MC_TOKEN is set on the server)",token);if(v!==null){token=v;localStorage.setItem("mc.token",v);toast("token saved")}}
+function tabs(){const p=(cache.status?.panels||[]).map(x=>x.name);return BASE.slice(0,1).concat(p).concat(BASE.slice(1))}
+function nav(){const p=(cache.status?.panels||[]).map(x=>x.name);$("#nav").innerHTML=tabs().map(t=>`<button class="${t===tab?'active':''} ${p.includes(t)?'panel':''}" onclick="go('${t}')">${t}</button>`).join("")}
+function go(t){tab=t;localStorage.setItem("mc.tab",t);nav();render()}
+function ago(iso){if(!iso)return"—";const d=(Date.now()-new Date(iso))/1000;if(d<60)return Math.round(d)+"s ago";if(d<3600)return Math.round(d/60)+"m ago";if(d<86400)return Math.round(d/3600)+"h ago";return Math.round(d/86400)+"d ago"}
+function pill(s){const c={completed:"var(--ok)",done:"var(--ok)",running:"var(--acc)",halted:"var(--warn)",failed:"var(--bad)",pending:"var(--warn)",approved:"var(--acc)",executed:"var(--ok)",denied:"var(--mute)",verified:"var(--ok)",published:"var(--gold)",draft:"var(--mute)"}[s]||"var(--mute)";return `<span class="pill" style="color:${c}">${esc(s)}</span>`}
+
+async function poll(){try{const s=await api("/api/status");const first=!cache.status;cache.status=s;
+  document.title=s.agent.name+" — Mission Control";$("#title").textContent="⚙ "+s.agent.name;
+  $("#dot").className="dot "+(s.running?"run":"on");
+  $("#hstate").textContent=s.running?`running · ${s.progress?.phase||""} ${s.progress?.total?`${s.progress.done}/${s.progress.total}`:""} ${s.progress?.message||""}`.slice(0,110):(s.last_run?`idle · last run ${ago(s.last_run.ended_at)} (${s.last_run.status})`:"idle · no runs yet");
+  $("#hmodel").textContent=`model ${s.model.backend}/${s.model.name} · ${s.budget.model_calls}/${s.budget.cap_monthly_model_call_cap} calls this month · ledger ${s.ledger.ok?"verified":"BROKEN"}`;
+  $("#runBtn").classList.toggle("hidden",s.running);$("#stopBtn").classList.toggle("hidden",!s.running);
+  const sel=$("#taskSel");if(sel.options.length!==s.tasks.length+1){sel.innerHTML=`<option value="">all scheduled tasks</option>`+s.tasks.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("")}
+  if(first){nav();render()}else if(tab==="Overview")renderOverview(s);
+ }catch(e){$("#dot").className="dot";$("#hstate").textContent="offline: "+e.message}}
+async function startRun(){const task=$("#taskSel").value||null;const input=task?(prompt("Optional input for the task (leave empty for none)","")||""):"";try{await api("/api/run",{method:"POST",headers:H(),body:JSON.stringify({task,input})});toast("run started"+(task?" · "+task:""));poll()}catch(e){toast(e.message)}}
+async function stopRun(){try{await api("/api/run/stop",{method:"POST",headers:H()});toast("stop requested")}catch(e){toast(e.message)}}
+
+function renderOverview(s){const lr=s.last_run,rc=lr?.receipt||{};const cols=Object.entries(s.collections||{});
+  $("#main").innerHTML=`
+  <div class="grid">
+    <div class="card"><h3>Agent</h3><div class="big" style="font-size:18px">${esc(s.agent.name)} <span class="sub">v${esc(s.agent.version)}</span></div><div class="sub">${esc(s.agent.responsibility||s.agent.description)}</div></div>
+    <div class="card"><h3>Pending approvals</h3><div class="big" style="color:${s.pending_approvals?'var(--warn)':'var(--ok)'}">${s.pending_approvals}</div><div class="sub">nothing executes without you</div></div>
+    <div class="card"><h3>Tasks</h3><div class="big">${s.tasks.length}</div><div class="sub">${s.tasks.map(t=>t.name).join(", ")}</div></div>
+    <div class="card"><h3>Tools allowed</h3><div class="big">${s.tools.length}</div><div class="sub">${s.tools.join(", ")}</div></div>
+    <div class="card"><h3>Budget this month</h3><div class="big">${s.budget.model_calls}<span class="sub"> / ${s.budget.cap_monthly_model_call_cap}</span></div><div class="bar"><i style="width:${Math.min(100,100*s.budget.model_calls/s.budget.cap_monthly_model_call_cap)}%"></i></div><div class="sub">${s.budget.tokens_in+s.budget.tokens_out} tokens · caps ${s.budget.cap_max_model_calls_per_run} calls, ${s.budget.cap_max_run_minutes} min per run</div></div>
+    ${cols.map(([c,n])=>`<div class="card"><h3>${esc(c)}</h3><div class="big">${n}</div><div class="sub">records</div></div>`).join("")}
+  </div>
+  ${s.running?`<div class="card" style="margin-bottom:16px"><h3>Run in progress — ${esc(s.progress?.run_id||"")}</h3><div class="row"><b>${esc(s.progress?.phase||"")}</b><span class="mono muted">${esc(s.progress?.message||"")}</span></div>${s.progress?.total?`<div class="bar"><i style="width:${100*s.progress.done/s.progress.total}%"></i></div>`:""}</div>`:""}
+  <div class="card"><h3>Last run ${lr?esc(lr.id):""}</h3>${lr?`<div class="row">${pill(lr.status)}<span class="pill">${esc(lr.mode)}</span><span class="muted">${esc(lr.halt_reason||"")}</span></div><p class="md">${esc(lr.summary||"(no summary)")}</p>
+    <div class="row mono muted">tasks ${rc.tasks_done??"—"}/${(rc.tasks||[]).length} · tool calls ${rc.tool_calls??"—"} · model calls ${rc.model_calls??"—"} · ${rc.duration_s??"—"}s</div>`:'<p class="muted">No runs yet. Pick a task (or all) and press <b>Run</b>.</p>'}</div>`}
+
+async function render(){const m=$("#main");const s=cache.status;if(!s){m.innerHTML='<p class="muted">connecting…</p>';return}
+ const panel=(s.panels||[]).find(p=>p.name===tab);
+ if(panel){const rows=await api("/api/docs/"+panel.collection+"?limit=500");const cols=panel.columns.length?panel.columns:Object.keys(rows[0]||{}).filter(k=>!k.startsWith("_")).slice(0,8);
+   m.innerHTML=`<div class="row"><span class="muted">${rows.length} records in <code>${esc(panel.collection)}</code></span></div>
+   <table><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}<th></th></tr>${rows.map(r=>`<tr>${cols.map(c=>`<td class="${typeof r[c]==='object'?'mono':''}">${c==='status'?pill(r[c]):esc(typeof r[c]==='object'?JSON.stringify(r[c]).slice(0,160):String(r[c]??"").slice(0,220))}</td>`).join("")}
+   <td style="white-space:nowrap">${(panel.actions||[]).map(a=>`<button class="btn sm ${a.style||''}" onclick="panelAct('${panel.collection}','${esc(r.id)}','${a.id}')">${esc(a.label)}</button>`).join(" ")} <button class="btn sm" onclick="showDoc('${panel.collection}','${esc(r.id)}')">view</button></td></tr>`).join("")||`<tr><td colspan="${cols.length+1}" class="muted">Nothing here yet.</td></tr>`}</table><div id="docView"></div>`;return}
+ if(tab==="Overview"){renderOverview(s);return}
+ if(tab==="Tasks"){const [ts,tools]=await Promise.all([api("/api/tasks"),api("/api/tools")]);
+   m.innerHTML=`<h3>Tasks (tasks/*.md)</h3><table><tr><th>task</th><th>schedule</th><th>skills</th><th>tools</th><th>deliverable checklist</th><th></th></tr>${ts.map(t=>`<tr><td><b>${esc(t.name)}</b><div class="muted">${esc(t.description)}</div></td><td>${esc(t.schedule)}</td><td>${(t.skills||[]).join(", ")}</td><td class="mono">${(t.tools||[]).join(", ")||"(all allowed)"}</td><td>${(t.deliverable||[]).map(d=>`• ${esc(d)}`).join("<br>")}</td><td><button class="btn sm primary" onclick="$('#taskSel').value='${esc(t.name)}';startRun()">run</button></td></tr>`).join("")}</table>
+   <h3 style="margin-top:20px">Tools (allowlist)</h3><table><tr><th>tool</th><th>risk</th><th>description</th><th>args</th></tr>${tools.map(t=>`<tr><td class="mono">${esc(t.name)}</td><td>${esc(t.risk||"")}${t.approval_action?` <span class="pill">proposes ${esc(t.approval_action)}</span>`:""}</td><td>${esc(t.description||"(not registered)")}</td><td class="mono muted">${esc(Object.keys(t.args||{}).join(", "))}</td></tr>`).join("")}</table>`;return}
+ if(tab==="Runs"){const rows=await api("/api/runs");
+   m.innerHTML=`<table><tr><th>run</th><th>status</th><th>mode</th><th>started</th><th>duration</th><th>tasks done</th><th>tool calls</th><th>model calls</th><th>halt reason</th><th></th></tr>${rows.map(r=>{const c=r.receipt||{};return`<tr><td class="mono">${esc(r.id)}</td><td>${pill(r.status)}</td><td>${esc(r.mode)}</td><td>${ago(r.started_at)}</td><td>${c.duration_s??"—"}s</td><td>${c.tasks_done??"—"}/${(c.tasks||[]).length}</td><td>${c.tool_calls??"—"}</td><td>${c.model_calls??"—"}</td><td class="muted">${esc(r.halt_reason||"")}</td><td><button class="btn sm" onclick="showRun('${r.id}')">receipt</button></td></tr>`}).join("")||'<tr><td colspan="10" class="muted">No runs yet.</td></tr>'}</table><div id="runDetail"></div>`;return}
+ if(tab==="Approvals"){const rows=await api("/api/approvals");
+   m.innerHTML=`<p class="muted">The agent proposes; you decide. Approve executes the described action and records the result. Deny is final. Nothing here executes on its own.</p>
+   <table><tr><th>#</th><th>status</th><th>action</th><th>target</th><th>rationale</th><th>what Approve will do</th><th>result</th><th></th></tr>${rows.map(a=>`<tr><td>${a.id}</td><td>${pill(a.status)}<div class="muted">${ago(a.created_at)}</div></td><td class="mono">${esc(a.action)}</td><td class="mono">${esc(a.target)}</td><td>${esc(a.rationale)}</td><td class="muted">${esc(a.description||"")}</td><td class="mono muted">${esc((a.result||"").slice(0,200))}</td>
+   <td style="white-space:nowrap">${a.status==="pending"?`<button class="btn sm ok" onclick="decide(${a.id},true)">Approve + execute</button> <button class="btn sm danger" onclick="decide(${a.id},false)">Deny</button>`:""}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">No proposed actions.</td></tr>'}</table>`;return}
+ if(tab==="Activity"){const [rows,v]=await Promise.all([api("/api/activity?limit=300"),api("/api/activity/verify")]);
+   m.innerHTML=`<div class="row"><span class="pill" style="color:${v.ok?'var(--ok)':'var(--bad)'}">ledger ${v.ok?"VERIFIED":"BROKEN at line "+v.first_bad_line}</span><span class="muted">${v.count} events, each hashed over the previous</span></div>
+   <table><tr><th>time</th><th>run</th><th>event</th><th>detail</th><th>hash</th></tr>${rows.slice().reverse().map(r=>`<tr><td class="muted" style="white-space:nowrap">${esc(r.ts)}</td><td class="mono">${esc(r.run_id||"")}</td><td><b>${esc(r.event)}</b></td><td class="mono" style="max-width:700px;word-break:break-all">${esc(JSON.stringify(r.detail)).slice(0,400)}</td><td class="mono muted">${r.hash.slice(0,10)}</td></tr>`).join("")}</table>`;return}
+ if(tab==="Brain"){const b=await api("/api/brain");const cur=cache.brain||"SOUL";cache.brain=cur;const f=await api("/api/brain/"+cur);
+   m.innerHTML=`<div class="row">${Object.keys(b.files).map(n=>`<button class="btn ${n===cur?'primary':''}" onclick="cache.brain='${n}';render()">${n}.md <span class="muted">${b.files[n].chars}</span></button>`).join("")}<span style="flex:1"></span><button class="btn ok" onclick="saveBrain()">Save ${cur}.md</button></div>
+   <p class="muted mono">${esc(f.path)}</p><textarea id="brainText">${esc(f.content)}</textarea>
+   <h3 style="margin-top:20px">Skills (agentskills.io format)</h3><table><tr><th>name</th><th>category</th><th>description</th><th>path</th></tr>${b.skills.map(s=>`<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.category)}</td><td>${esc(s.description)}</td><td class="mono muted">${esc(s.path)}</td></tr>`).join("")}</table>`;return}
+ if(tab==="Schedule"){const sc=await api("/api/schedule");
+   m.innerHTML=`<div class="card" style="max-width:760px"><h3>Trigger — ${esc(sc.backend||"")}</h3>${sc.installed?`<div class="row"><span class="pill" style="color:var(--ok)">installed</span><b>${esc(sc.task)}</b> <span class="muted">${esc(sc.schedule||"")} at ${esc(sc.start_time||"")}</span></div><div class="mono muted">status: ${esc(sc.status||"")} · next: ${esc(sc.next_run||"")} · last: ${esc(sc.last_run||"")} (${esc(sc.last_result||"")})</div><div class="mono muted" style="margin:6px 0">${esc(sc.task_to_run||"")}</div><div class="row" style="margin-top:12px"><button class="btn" onclick="sched('run')">Run task now</button><button class="btn danger" onclick="sched('remove')">Remove</button></div>`
+   :`<p class="muted">Not installed. The agent runs only when you press Run, or when the daily trigger is installed.</p><div class="row"><input type="text" id="schedTime" value="07:30" style="width:80px"> <button class="btn primary" onclick="sched('install')">Install daily trigger</button></div>`}
+   <p class="muted" style="margin-top:14px">Caps are set before scheduling (course rule 4.2): ${s.budget.cap_max_model_calls_per_run} model calls / run, ${s.budget.cap_monthly_model_call_cap} / month, ${s.budget.cap_max_run_minutes} minutes / run.</p></div>`;return}
+ if(tab==="Doctor"){m.innerHTML='<p class="muted">Running checks…</p>';const d=await api("/api/doctor");
+   m.innerHTML=`<div class="row"><span class="pill" style="color:${d.ok?'var(--ok)':'var(--bad)'}">${d.ok?"READY — all required checks pass":"NOT READY — "+d.failed_required+" required check(s) failed"}</span><span class="muted">${d.warnings} warning(s)</span><span style="flex:1"></span><button class="btn" onclick="render()">Re-run</button></div>
+   <table><tr><th></th><th>check</th><th>detail</th><th>fix</th></tr>${d.checks.map(c=>`<tr><td><span class="pill" style="color:${c.ok?'var(--ok)':(c.required?'var(--bad)':'var(--warn)')}">${c.ok?"PASS":(c.required?"FAIL":"WARN")}</span></td><td>${esc(c.name)}</td><td class="mono muted">${esc(c.detail)}</td><td class="mono">${c.ok?"":esc(c.fix)}</td></tr>`).join("")}</table>`;return}
+ if(tab==="Report"){const r=await api("/api/report/latest");m.innerHTML=r.content?`<p class="muted mono">${esc(r.path)}</p><pre>${esc(r.content)}</pre>`:'<p class="muted">No report yet. Run a task; the report appears here and in the inbox folder when the run halts.</p>';return}
+ if(tab==="Chat"){cache.chat=cache.chat||[];m.innerHTML=`<p class="muted">Ask the agent about its state. Read-only.</p><div class="chat" id="chatLog">${cache.chat.map(c=>`<div class="msg ${c.me?'me':''}">${esc(c.text)}</div>`).join("")}</div><div class="row" style="margin-top:12px"><input type="text" id="q" style="flex:1" placeholder="What did you do in the last run?" onkeydown="if(event.key==='Enter')ask()"><button class="btn primary" onclick="ask()">Ask</button></div>`;return}
+}
+async function decide(id,ok){if(ok&&!confirm("Approve and EXECUTE this action now?"))return;try{const r=await api(`/api/approvals/${id}/${ok?"approve":"deny"}`,{method:"POST",headers:H()});toast(ok?((r.ok?"executed ✓ ":"FAILED: ")+(r.result||"")).slice(0,200):"denied",6000);render()}catch(e){toast(e.message)}}
+async function panelAct(col,id,action){try{const r=await api(`/api/panel/${col}/${id}/${action}`,{method:"POST",headers:H()});toast(JSON.stringify(r).slice(0,200),6000);render()}catch(e){toast(e.message)}}
+async function showDoc(col,id){const d=await api(`/api/docs/${col}/${id}`);$("#docView").innerHTML=`<h3>${esc(col)} / ${esc(id)}</h3><pre>${esc(JSON.stringify(d,null,2))}</pre>`}
+async function showRun(id){const r=await api("/api/runs/"+id);$("#runDetail").innerHTML=`<h3>Receipt — ${esc(id)}</h3><pre>${esc(JSON.stringify(r.receipt,null,2))}</pre><h3>Summary</h3><p class="md">${esc(r.summary||"(none)")}</p><p class="muted mono">${esc(r.report_path||"")}</p>`}
+async function saveBrain(){try{await api("/api/brain/"+cache.brain,{method:"PUT",headers:H(),body:JSON.stringify({content:$("#brainText").value})});toast(cache.brain+".md saved — used on the next run")}catch(e){toast(e.message)}}
+async function sched(a){try{const body=a==="install"?JSON.stringify({time:$("#schedTime").value}):undefined;const r=await api("/api/schedule/"+a,{method:"POST",headers:H(),body});toast((r.ok?"ok: ":"failed: ")+(r.output||"").slice(0,200),6000);render()}catch(e){toast(e.message)}}
+async function ask(){const q=$("#q").value.trim();if(!q)return;cache.chat.push({me:true,text:q});$("#q").value="";render();try{const r=await api("/api/chat",{method:"POST",headers:H(),body:JSON.stringify({question:q})});cache.chat.push({me:false,text:r.answer+`\n\n— ${r.usage.model}, ${r.usage.tokens_in+r.usage.tokens_out} tokens`})}catch(e){cache.chat.push({me:false,text:"error: "+e.message})}render()}
+poll();setInterval(poll,3000);setInterval(()=>{if(cache.status?.running&&!["Brain","Chat"].includes(tab))render()},10000);
+</script>
+</body>
+</html>
