@@ -22,7 +22,11 @@ def search(query: str, max_results: int = 8) -> list[dict]:
     url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=20) as r:
+        status = r.status
         page = r.read().decode("utf-8", errors="replace")
+    if status == 202 or ("anomaly" in page.lower() and "result__a" not in page):
+        # DuckDuckGo's bot challenge (seen from sandboxed/cloud egress): say so instead of pretending the query had no results
+        raise RuntimeError("search engine returned an anti-bot challenge (HTTP 202) for this egress; results unavailable, not empty")
     out = []
     for m in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>.*?<a class="result__snippet"[^>]*>(.*?)</a>', page, flags=re.S):
         href = html.unescape(m.group(1))
