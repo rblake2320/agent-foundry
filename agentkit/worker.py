@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import threading
 import time
 import traceback
@@ -55,7 +56,7 @@ class Worker:
     def new_run(self, mode: str) -> str:
         self.t0 = time.time()
         self._stop.clear()
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)  # unique even within one second
         self.run_id = run_id
         self.progress = {"phase": "DEFINE", "message": "", "done": 0, "total": 0, "run_id": run_id}
         self.store.create_run(run_id, mode)
@@ -121,7 +122,9 @@ class Worker:
         self.store.finish_run(run_id, status, halt_reason, receipt, summary, str(path) if path else None)
         self.ledger.append("run_finished", run_id, status=status, halt_reason=halt_reason, receipt={k: v for k, v in receipt.items() if k != "limits"})
         self.progress.update({"phase": "HALT", "message": halt_reason})
-        return self.store.get_run(run_id) or {}
+        run = self.store.get_run(run_id) or {}
+        run["results"] = results  # in-memory only: evaluators and callers get the task outputs without re-parsing the report
+        return run
 
     def run_task(self, model: ModelClient, t: dict, input_text: str = "") -> dict:
         cfg = self.cfg
@@ -150,6 +153,8 @@ class Worker:
                     f"\n\n# Budget\nstep {steps}/{lim.max_steps_per_task}, tool calls {tool_calls}/{lim.max_tool_calls_per_task}. Reply with the JSON step.")
             try:
                 step = model.complete_json(system, user)
+                self.ledger.append("model_step", self.run_id, task=t["name"], step=steps, latency_s=model.last_latency_s,
+                                   action=str(step.get("action", ""))[:10], tool=str(step.get("tool", ""))[:40])
             except ModelError as e:
                 transcript.append(f"[step {steps}] model error: {e}")
                 self.ledger.append("model_error", self.run_id, task=t["name"], error=str(e)[:200])
@@ -168,8 +173,10 @@ class Worker:
                 continue
             tool_calls += 1
             self.tick("TASK", f"{t['name']} → {name}({json.dumps(args)[:80]})")
+            t_tool = time.time()
             out = run_tool(ctx, name, args, tools, lim.tool_output_chars)
-            self.ledger.append("tool_call", self.run_id, task=t["name"], tool=name, args=json.dumps(args)[:300], ok=not out.startswith("ERROR"))
+            self.ledger.append("tool_call", self.run_id, task=t["name"], tool=name, args=json.dumps(args)[:300], ok=not out.startswith("ERROR"),
+                               latency_s=round(time.time() - t_tool, 2), output_chars=len(out))
             transcript.append(f"[step {steps}] thought: {str(step.get('thought', ''))[:200]}\n[step {steps}] {name}({json.dumps(args)[:200]}) ->\n<<<UNTRUSTED\n{out}\nUNTRUSTED>>>")
             if _looks_like_injection(out):
                 self.ledger.append("injection_flagged", self.run_id, task=t["name"], tool=name)

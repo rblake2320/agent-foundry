@@ -256,6 +256,52 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     def doc():
         return doctor.summarize(doctor.run_checks(cfg))
 
+    @app.get("/api/health")
+    def health():
+        from .health import health_report
+        return health_report(cfg)
+
+    @app.get("/api/evals")
+    def evals_last():
+        from .evals import list_evals
+        rows = store.list("evals", limit=10)
+        return {"defined": list_evals(cfg), "runs": rows}
+
+    @app.post("/api/evals/run", dependencies=[Depends(require_token)])
+    def evals_run():
+        if state["thread"] and state["thread"].is_alive():
+            raise HTTPException(409, "a run is already in progress")
+        from .evals import run_evals
+        holder: dict = {}
+
+        def go():
+            holder["result"] = run_evals(cfg, worker_cls)
+        t = threading.Thread(target=go, daemon=True)
+        w = worker_cls(cfg, store, ledger)
+        w.progress = {"phase": "EVALS", "message": "running evals/*.md", "done": 0, "total": 0, "run_id": None}
+        state.update({"worker": w, "thread": t})
+        t.start()
+        ledger.append("evals_requested", None, source="mission_control")
+        return {"started": True}
+
+    @app.get("/api/faults")
+    def faults_last():
+        from .faults import scenarios
+        return {"scenarios": scenarios(), "last": store.get("faults", "latest")}
+
+    @app.post("/api/faults/run", dependencies=[Depends(require_token)])
+    def faults_run():
+        if state["thread"] and state["thread"].is_alive():
+            raise HTTPException(409, "a run is already in progress")
+        from .faults import run_faults
+        t = threading.Thread(target=lambda: run_faults(cfg, worker_cls), daemon=True)
+        w = worker_cls(cfg, store, ledger)
+        w.progress = {"phase": "FAULTS", "message": "fault injection scenarios", "done": 0, "total": 0, "run_id": None}
+        state.update({"worker": w, "thread": t})
+        t.start()
+        ledger.append("faults_requested", None, source="mission_control")
+        return {"started": True}
+
     @app.get("/api/report/latest")
     def latest_report():
         for r in store.list_runs(limit=20):

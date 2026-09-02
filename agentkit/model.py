@@ -27,12 +27,13 @@ class ModelClient:
         self.cfg, self.store = cfg, store
         self.calls = self.tokens_in = self.tokens_out = 0
         self.backend = cfg.model.backend
-        self.name = {"ollama": cfg.model.ollama_model, "claude": f"claude:{cfg.model.claude_model}"}.get(self.backend, "none")
+        self.name = {"ollama": cfg.model.ollama_model, "claude": f"claude:{cfg.model.claude_model}",
+                     "openai_compat": f"openai_compat:{cfg.model.openai_model}"}.get(self.backend, "none")
         self.last_latency_s = 0.0
 
     @property
     def available(self) -> bool:
-        return self.backend in ("ollama", "claude")
+        return self.backend in ("ollama", "claude", "openai_compat")
 
     def check_budget(self) -> None:
         lim = self.cfg.limits
@@ -65,6 +66,8 @@ class ModelClient:
             text, tin, tout = self._ollama(system, user, json_mode)
         elif self.backend == "claude":
             text, tin, tout = self._claude(system, user)
+        elif self.backend == "openai_compat":
+            text, tin, tout = self._openai_compat(system, user, json_mode)
         elif self.backend == "none":
             raise ModelError("no model configured ([model].backend = none)")
         else:
@@ -90,6 +93,45 @@ class ModelClient:
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise ModelError(f"ollama unreachable: {e}") from e
         return data.get("message", {}).get("content", ""), int(data.get("prompt_eval_count", 0)), int(data.get("eval_count", 0))
+
+    def _openai_compat(self, system: str, user: str, json_mode: bool):
+        """OpenAI-style /chat/completions: NVIDIA NIM (cloud or local), vLLM, LM Studio… Key from env only."""
+        key = os.environ.get(self.cfg.model.openai_api_key_env, "")
+        if not key and "localhost" not in self.cfg.model.openai_base_url and "127.0.0.1" not in self.cfg.model.openai_base_url:
+            raise ModelError(f"env var {self.cfg.model.openai_api_key_env} is not set")
+        body = {"model": self.cfg.model.openai_model, "temperature": 0, "max_tokens": 2048,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        req = urllib.request.Request(self.cfg.model.openai_base_url.rstrip("/") + "/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+        try:
+            try:
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    data = json.load(r)
+            except urllib.error.HTTPError as e0:
+                if e0.code in (429, 503):  # overloaded endpoint: one retry after a short pause, then report honestly
+                    time.sleep(4)
+                    req = urllib.request.Request(self.cfg.model.openai_base_url.rstrip("/") + "/chat/completions", data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+                    with urllib.request.urlopen(req, timeout=180) as r:
+                        data = json.load(r)
+                else:
+                    raise
+        except urllib.error.HTTPError as e:
+            detail = e.read(500).decode("utf-8", errors="replace")
+            if json_mode and e.code == 400 and "response_format" in detail:
+                body.pop("response_format", None)  # some NIMs reject json_object; retry plain
+                req = urllib.request.Request(self.cfg.model.openai_base_url.rstrip("/") + "/chat/completions", data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    data = json.load(r)
+            else:
+                raise ModelError(f"openai_compat HTTP {e.code}: {detail[:200]}") from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise ModelError(f"openai_compat unreachable: {e}") from e
+        u = data.get("usage") or {}
+        return (data["choices"][0]["message"].get("content") or ""), int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
 
     def _claude(self, system: str, user: str):
         env = dict(os.environ)

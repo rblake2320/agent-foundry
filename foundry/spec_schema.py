@@ -74,6 +74,17 @@ def validate(spec: dict) -> list[str]:
         for k in ("procedure", "verification"):
             if len(s.get(k) or []) < 2:
                 errs.append(f"skill {s.get('name')}: {k} needs at least 2 items")
+    task_names = {t.get("name") for t in spec.get("tasks") or []}
+    for i, ev in enumerate(spec.get("evals") or []):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(ev.get("name", ""))):
+            errs.append(f"eval {i} name must be kebab-case: {ev.get('name')!r}")
+        if ev.get("task") not in task_names:
+            errs.append(f"eval {ev.get('name')}: task {ev.get('task')!r} is not one of the agent's tasks")
+        if len(ev.get("expected") or []) < 1:
+            errs.append(f"eval {ev.get('name')}: needs at least one expected item")
+        bad_t = [x for x in (ev.get("expected_tools") or []) + (ev.get("forbidden_tools") or []) if x not in REGISTRY]
+        if bad_t:
+            errs.append(f"eval {ev.get('name')}: unknown tools {bad_t}")
     p = spec.get("pricing") or {}
     if p.get("model") not in PRICING_MODELS:
         errs.append(f"pricing.model must be one of {PRICING_MODELS}")
@@ -99,6 +110,13 @@ def normalize(spec: dict) -> dict:
     spec.setdefault("user_context", [])
     spec.setdefault("panels", [])
     spec.setdefault("assumptions", [])
+    spec.setdefault("evals", [])
+    for ev in spec.get("evals") or []:
+        ev.setdefault("input", "")
+        ev.setdefault("expected_tools", [])
+        ev.setdefault("forbidden_tools", [])
+        ev.setdefault("max_steps", 12)
+        ev.setdefault("max_seconds", 600)
     for t in spec.get("tasks") or []:
         t.setdefault("schedule", "manual")
         t.setdefault("skills", [])

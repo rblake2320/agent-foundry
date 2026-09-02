@@ -29,7 +29,7 @@ tool_output_chars = 6000
 allowed = ["record_list", "record_get", "record_put", "read_file", "note_write", "current_time"]
 
 [approvals]
-actions = ["publish_agent", "deploy_agent", "launch_agent"]
+actions = ["publish_agent", "deploy_agent", "launch_agent", "apply_fix"]
 
 [schedule]
 time = "06:30"

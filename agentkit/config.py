@@ -21,11 +21,14 @@ class AgentMeta:
 
 @dataclass
 class ModelCfg:
-    backend: str = "ollama"          # ollama | claude | none
+    backend: str = "ollama"          # ollama | claude | openai_compat (NVIDIA NIM, vLLM, any OpenAI-style endpoint) | none
     ollama_model: str = "qwen3.8:27b"
     ollama_url: str = "http://localhost:11434"
     ollama_num_ctx: int = 16384
     claude_model: str = "sonnet"
+    openai_base_url: str = "https://integrate.api.nvidia.com/v1"   # NVIDIA NIM cloud by default; point at a local NIM for on-prem
+    openai_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    openai_api_key_env: str = "NVIDIA_API_KEY"                      # the key is read from this env var, never from the file
 
 
 @dataclass

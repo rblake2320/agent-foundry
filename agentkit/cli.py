@@ -47,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="last run, pending approvals, budget")
     sub.add_parser("verify-log", help="verify the hash-chained ledger")
     sub.add_parser("card", help="print the A2A agent card")
+    sub.add_parser("health", help="health report: runs, deliverables, tool errors, profiler, budget, doctor, ledger")
+    e = sub.add_parser("evals", help="run the agent's evals/*.md (task-driven evaluation with outcome/tool_use/efficiency/safety)")
+    e.add_argument("name", nargs="?")
+    f = sub.add_parser("faults", help="fault injection: prove the agent fails safely")
+    f.add_argument("scenario", nargs="*")
     a = sub.add_parser("approvals", help="list/approve/deny/execute")
     a.add_argument("action", choices=["list", "approve", "deny", "execute"])
     a.add_argument("id", nargs="?", type=int)
@@ -95,6 +100,26 @@ def main(argv: list[str] | None = None) -> int:
         from .mc import agent_card
         print(json.dumps(agent_card(cfg), indent=2))
         return 0
+    if args.cmd == "health":
+        from .health import health_report
+        h = health_report(cfg)
+        print(json.dumps(h, indent=2, default=str))
+        return 0 if h["grade"] != "red" else 1
+    if args.cmd == "evals":
+        from .evals import run_evals
+        r = run_evals(cfg, worker_cls, only=args.name)
+        print(json.dumps({k: v for k, v in r.items() if k not in ("trials", "scores")}, indent=2, default=str))
+        for s in r["scores"]:
+            print(f"  {s['eval']:<28} {s['status']:<10} outcome={s['outcome']} tool_use={s['tool_use']} efficiency={s['efficiency']} safety={s['safety']} quality={s['quality']}"
+                  + (f"  missing: {'; '.join(s['missing'])[:120]}" if s["missing"] else ""))
+        return 0 if r["verdict"] == "PASS" else 1
+    if args.cmd == "faults":
+        from .faults import run_faults
+        r = run_faults(cfg, worker_cls, only=args.scenario or None)
+        for x in r["results"]:
+            print(f"  [{'PASS' if x['ok'] else 'FAIL'}] {x['scenario']}: " + " | ".join(x["evidence"])[:220])
+        print(f"{r['verdict']}: {r['passed']}/{r['total']} scenarios contained")
+        return 0 if r["verdict"] == "PASS" else 1
     if args.cmd == "approvals":
         if args.action == "list":
             for ap_ in store.list_approvals():

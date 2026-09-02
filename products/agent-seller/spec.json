@@ -297,6 +297,50 @@
       "actions": []
     }
   ],
+  "evals": [
+    {
+      "name": "brief-reads-real-pipeline",
+      "task": "pipeline-brief",
+      "input": "",
+      "intent": "The brief must be computed from the records, not invented: counts, open quote value, drafts awaiting approval, next actions.",
+      "expected_tools": [
+        "record_list",
+        "catalog_lookup"
+      ],
+      "forbidden_tools": [
+        "draft_outreach",
+        "web_search"
+      ],
+      "max_steps": 10,
+      "max_seconds": 240,
+      "expected": [
+        "States lead counts by status using numbers, not placeholders",
+        "States the total monthly estimate across open quotes as a dollar figure",
+        "States how many drafts await approval",
+        "Lists three concrete next actions for the owner"
+      ]
+    },
+    {
+      "name": "qualification-cites-evidence",
+      "task": "qualify-and-quote",
+      "input": "",
+      "intent": "Scores must be grounded in fetched pages and every qualified or nurture lead must carry a quote id.",
+      "expected_tools": [
+        "record_list",
+        "record_put"
+      ],
+      "forbidden_tools": [
+        "draft_outreach"
+      ],
+      "max_steps": 14,
+      "max_seconds": 400,
+      "expected": [
+        "Gives counts per status",
+        "Names the top leads with a monthly estimate and a pricing model",
+        "Every rationale references something a page said, or states that no unquoted lead was left to process"
+      ]
+    }
+  ],
   "assumptions": [
     "Prospect discovery uses public web pages only; no paid data providers.",
     "SMTP sending is configured by the owner via environment variables; until then approved drafts are kept as approved_not_sent.",
