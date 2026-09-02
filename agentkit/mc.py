@@ -124,7 +124,8 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         last = [r for r in store.list_runs(limit=20) if r["status"] != "running" and not str(r.get("mode", "")).startswith("fault:")][:1]
         return {"agent": cfg.agent.__dict__, "running": running, "progress": progress, "last_run": last[0] if last else None,
                 "pending_approvals": len(store.list_approvals("pending")), "budget": {**store.month_budget(), **{f"cap_{k}": v for k, v in cfg.limits.__dict__.items()}},
-                "model": {"backend": cfg.model.backend, "name": cfg.model.ollama_model if cfg.model.backend == "ollama" else cfg.model.claude_model},
+                "model": {"backend": cfg.model.backend, "name": {"ollama": cfg.model.ollama_model, "claude": cfg.model.claude_model,
+                                                                  "openai_compat": cfg.model.openai_model}.get(cfg.model.backend, "none")},
                 "tools": cfg.tools_allowed, "approval_actions": cfg.approval_actions, "auth_required": bool(token),
                 "tasks": [{k: v for k, v in t.items() if k != "body"} for t in brain.list_tasks(cfg)],
                 "panels": [{"name": p["name"], "collection": p["collection"], "columns": p.get("columns", []), "actions": p.get("actions", [])} for p in panels],

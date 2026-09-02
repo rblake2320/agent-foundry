@@ -23,7 +23,7 @@ def test_policy_from_allowlist_and_yaml_shape(cfg):
     pol2 = openshell.policy_for(cfg)
     hosts = {e["host"] for e in pol2["network_policies"]["tool_egress"]["endpoints"]}
     assert "html.duckduckgo.com" in hosts and all(e["access"] == "read-only" and e["enforcement"] == "enforce" for e in pol2["network_policies"]["tool_egress"]["endpoints"])
-    assert pol2["network_policies"]["tool_egress"]["binaries"] == [{"path": openshell.PY}]
+    assert pol2["network_policies"]["tool_egress"]["binaries"] == openshell.PY_BINARIES
     y2 = openshell.to_yaml(pol2)
     assert "- host: html.duckduckgo.com" in y2 and "- { path: /usr/bin/python3 }" in y2
     try:
