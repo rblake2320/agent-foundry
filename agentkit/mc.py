@@ -121,7 +121,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         ext = store.running_run()
         if not running and ext:
             running, progress = True, {"phase": ext.get("phase"), "message": "(started outside Mission Control)", "done": 0, "total": 0, "run_id": ext["id"]}
-        last = [r for r in store.list_runs(limit=10) if r["status"] != "running"][:1]
+        last = [r for r in store.list_runs(limit=20) if r["status"] != "running" and not str(r.get("mode", "")).startswith("fault:")][:1]
         return {"agent": cfg.agent.__dict__, "running": running, "progress": progress, "last_run": last[0] if last else None,
                 "pending_approvals": len(store.list_approvals("pending")), "budget": {**store.month_budget(), **{f"cap_{k}": v for k, v in cfg.limits.__dict__.items()}},
                 "model": {"backend": cfg.model.backend, "name": cfg.model.ollama_model if cfg.model.backend == "ollama" else cfg.model.claude_model},
