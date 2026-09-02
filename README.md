@@ -43,6 +43,22 @@ place, re-verifies, re-runs evals and records before/after scores in the Repairs
 Model backends: local Ollama (default), `claude -p`, `none`, or any OpenAI-compatible endpoint including **NVIDIA NIM**
 (`[model].backend = "openai_compat"`, key read from the env var named in `openai_api_key_env`, default `NVIDIA_API_KEY`).
 
+## Runtime below the harness: NVIDIA OpenShell
+
+agentkit governs what an agent *tries* (tool allowlist, approvals, budgets). NVIDIA OpenShell governs what it *can do*
+(Landlock filesystem, seccomp, proxy-enforced egress, routed inference, injected credentials). Every agent exports a
+deny-by-default OpenShell sandbox policy derived from its own allowlist, plus a launch doc:
+
+```bash
+python -m agentkit --root products/agent-seller openshell     # writes openshell/policy.yaml + RUN_UNDER_OPENSHELL.md
+```
+
+Only hosts a tool actually needs are allowed (web search → DuckDuckGo, read-only, python binary only); model calls go
+through `inference.local` so caller keys are stripped; approval-gated actions such as `send_email` are **not**
+pre-authorized and get a narrow rule only when the owner approves. The Foundry's own policy has no tool egress at all,
+so a built agent never holds more authority than its builder (the "authority ceiling" OpenShell enforces for subagents).
+Mission Control shows the policy at `/api/openshell`.
+
 ## The first product: Agent Seller
 
 Commission `foundry/commissions/001-agent-seller.json` builds `products/agent-seller/`: a sales worker that reads the

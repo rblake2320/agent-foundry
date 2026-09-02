@@ -256,6 +256,12 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     def doc():
         return doctor.summarize(doctor.run_checks(cfg))
 
+    @app.get("/api/openshell")
+    def openshell_policy():
+        from . import openshell
+        pol = openshell.policy_for(cfg)
+        return {"policy": pol, "yaml": openshell.to_yaml(pol), "launch": openshell.launch_doc(cfg)}
+
     @app.get("/api/health")
     def health():
         from .health import health_report

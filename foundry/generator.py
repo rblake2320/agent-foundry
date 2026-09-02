@@ -286,4 +286,6 @@ python -m agentkit --root products/{spec["slug"]} mc          # Mission Control 
 Agent card: `http://127.0.0.1:{port}/.well-known/agent-card.json`
 ''', encoding="utf-8")
     (dest / "spec.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    from agentkit import config as kconfig, openshell  # OpenShell policy derived from the allowlist the package just declared
+    openshell.export(kconfig.load(dest))
     return dest
