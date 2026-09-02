@@ -13,7 +13,7 @@ from .store import Store
 
 def health_report(cfg: Config, runs_window: int = 20) -> dict:
     store, ledger = Store(cfg.db), Ledger(cfg.ledger)
-    runs = store.list_runs(limit=runs_window)
+    runs = [r for r in store.list_runs(limit=runs_window * 2) if not str(r.get("mode", "")).startswith("fault:")][:runs_window]
     by_status = defaultdict(int)
     halts = defaultdict(int)
     durations, model_calls = [], []

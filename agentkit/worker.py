@@ -36,6 +36,7 @@ class Worker:
         self._stop = threading.Event()
         self.t0 = 0.0
         self.run_id: str | None = None
+        self.run_label: str | None = None   # e.g. "fault" — health excludes labeled runs from the agent's grade
 
     # ---- helpers
     def tick(self, phase: str, message: str = "", **kw) -> None:
@@ -59,6 +60,8 @@ class Worker:
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)  # unique even within one second
         self.run_id = run_id
         self.progress = {"phase": "DEFINE", "message": "", "done": 0, "total": 0, "run_id": run_id}
+        if self.run_label:
+            mode = f"{self.run_label}:{mode}"
         self.store.create_run(run_id, mode)
         self.ledger.append("run_started", run_id, agent=self.cfg.agent.slug, mode=mode, limits=self.cfg.limits.__dict__)
         return run_id
