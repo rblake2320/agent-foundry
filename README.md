@@ -96,6 +96,24 @@ Every agentkit agent (the Foundry and everything it builds) carries its own trus
   and the catalogue to a peer over rsync/ssh or to S3 (`status` shows what and how fresh). Keys stay put unless `--with-keys`.
   Every sync is itself a ledger event (`state_synced`), so the ledger records where its own copies are.
 
+## Readiness is declared, measured and soaked — never assumed
+
+- **Load.** `python scripts/make_load_fixture.py products/agent-seller <dir>` builds a production-sized state (50k hash-chained ledger
+  events, 20k records, 2k runs, 500 approvals); `python scripts/load_test.py --base http://127.0.0.1:8111 --procs 8` drives it with a
+  multi-process generator and prints requests/s, p50/p95/p99 and error rate per endpoint and concurrency level against a stated bar.
+  Measured 2026-09-03 on one Linux box (20-core DGX Spark, one uvicorn worker, SQLite WAL): 100 concurrent readers at 3–10k req/s with
+  p95 ≤ 70 ms and 0 errors; 500 concurrent readers with 0 errors and p95 0.5–6 s (degraded, not broken). That is the verified tier for
+  *one agent instance*: Pilot-ready and Department-ready for readers. Sustained (hours) and write-mix runs are not yet done; multi-tenant
+  surfaces do not exist. `tests/test_scale.py` pins the O(1) ledger, SQL-side filters and hot-path latency so they cannot regress.
+- **Liveness.** `python scripts/watchdog.py install --every 2 --targets watchdog.json` probes every long-running piece from cron or Task
+  Scheduler, heals what has a safe heal (e.g. restart the sandbox port-forward), records every sample and writes ledger events;
+  `watchdog.py soak --hours 24` is the readiness verdict. Long-running processes run under systemd (`Restart=always`), never `nohup &`.
+- **Fault injection below the harness.** `scripts/infra_faults.sh forward gateway sandbox` breaks the runtime for real (kill the forward,
+  restart the gateway, stop/start the sandbox) and records recovery time in the ledger. Agent-level fault injection stays in `agentkit faults`.
+- **Serving.** `agentkit mc --workers N` scales reads across processes on Linux (run state is in the store, so one run at a time is still
+  enforced); reads are served from a 1 s cache of serialized bodies with single-flight recompute and write invalidation; overload sheds
+  fast with HTTP 503 (`AGENTKIT_MC_LIMIT_CONCURRENCY`, default 512 per worker). Do not use `--workers > 1` on Windows.
+
 ## The first product: Agent Seller
 
 Commission `foundry/commissions/001-agent-seller.json` builds `products/agent-seller/`: a sales worker that reads the
