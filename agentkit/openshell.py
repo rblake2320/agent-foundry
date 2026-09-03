@@ -7,6 +7,7 @@ through `inference.local`, and approval-gated actions (email) are NOT pre-author
 narrow rule only when the owner approves. A child agent's policy is always a subset of its builder's."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .config import Config
@@ -24,11 +25,14 @@ TOOL_HOSTS = {
 APPROVAL_HOSTS = {"send_email": "SMTP host (from SMTP_HOST) — add a rule only when a send_email approval is executed"}
 
 
-def policy_for(cfg: Config) -> dict:
+def policy_for(cfg: Config, l7: str | None = None) -> dict:
+    """`l7` is the L7 protocol name for HTTPS endpoints: `rest` for current OpenShell (>= 0.0.37), `https` for the 0.0.1x schema.
+    Default from AGENTKIT_OPENSHELL_L7, else `rest`."""
+    l7 = l7 or os.environ.get("AGENTKIT_OPENSHELL_L7", "rest")
     endpoints: dict[str, dict] = {}
     for tool in cfg.tools_allowed:
         for host, port, access in TOOL_HOSTS.get(tool, []):
-            endpoints.setdefault(host, {"host": host, "port": port, "protocol": "https", "enforcement": "enforce", "access": access})
+            endpoints.setdefault(host, {"host": host, "port": port, "protocol": l7, "enforcement": "enforce", "access": access})
     return {
         "version": 1,
         "filesystem_policy": {
@@ -117,9 +121,9 @@ so the sandbox cannot send even if the harness were bypassed. A built agent's po
 """
 
 
-def export(cfg: Config, dest: Path | None = None) -> Path:
+def export(cfg: Config, dest: Path | None = None, l7: str | None = None) -> Path:
     out = Path(dest) if dest else cfg.root / "openshell"
     out.mkdir(parents=True, exist_ok=True)
-    (out / "policy.yaml").write_text(to_yaml(policy_for(cfg)), encoding="utf-8")
+    (out / "policy.yaml").write_text(to_yaml(policy_for(cfg, l7)), encoding="utf-8")
     (out / "RUN_UNDER_OPENSHELL.md").write_text(launch_doc(cfg), encoding="utf-8")
     return out

@@ -19,18 +19,19 @@ network_policies:
     endpoints:
       - host: html.duckduckgo.com
         port: 443
-        protocol: https
+        protocol: rest
         enforcement: enforce
         access: read-only
       - host: duckduckgo.com
         port: 443
-        protocol: https
+        protocol: rest
         enforcement: enforce
         access: read-only
       - host: lite.duckduckgo.com
         port: 443
-        protocol: https
+        protocol: rest
         enforcement: enforce
         access: read-only
     binaries:
       - { path: /usr/bin/python3 }
+      - { path: /usr/local/bin/python3.12 }

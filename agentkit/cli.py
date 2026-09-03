@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("verify-log", help="verify the hash-chained ledger")
     sub.add_parser("card", help="print the A2A agent card")
     sub.add_parser("health", help="health report: runs, deliverables, tool errors, profiler, budget, doctor, ledger")
-    sub.add_parser("openshell", help="export an NVIDIA OpenShell sandbox policy + launch doc derived from the tool allowlist")
+    osh = sub.add_parser("openshell", help="export an NVIDIA OpenShell sandbox policy + launch doc derived from the tool allowlist")
+    osh.add_argument("--l7", choices=["rest", "https"], help="L7 protocol name for HTTPS endpoints: rest (OpenShell >= 0.0.37, default) or https (0.0.1x)")
     e = sub.add_parser("evals", help="run the agent's evals/*.md (task-driven evaluation with outcome/tool_use/efficiency/safety)")
     e.add_argument("name", nargs="?")
     f = sub.add_parser("faults", help="fault injection: prove the agent fails safely")
@@ -113,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "openshell":
         from . import openshell
-        out = openshell.export(cfg)
+        out = openshell.export(cfg, l7=args.l7)
         print((out / "policy.yaml").read_text(encoding="utf-8"))
         print(f"written: {out / 'policy.yaml'} and {out / 'RUN_UNDER_OPENSHELL.md'}")
         return 0

@@ -70,7 +70,10 @@ openshell inference get 2>&1 | sed -n 1,5p
 
 step "6/8 policy export (deny-by-default, derived from the tool allowlist)"
 cd "$ROOT"
-python3 -m agentkit --root "$AGENT" openshell >/dev/null
+VER="$(openshell --version | awk '{print $2}')"
+L7=rest; case "$VER" in 0.0.[0-9]|0.0.[12][0-9]|0.0.3[0-6]) L7=https;; esac    # policies before 0.0.37 spelled the L7 protocol "https"
+echo "openshell $VER → L7 protocol '$L7'"
+python3 -m agentkit --root "$AGENT" openshell --l7 "$L7" >/dev/null
 sha256sum "$AGENT/openshell/policy.yaml"
 
 step "7/8 sandbox $NAME"
