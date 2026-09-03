@@ -103,6 +103,8 @@ def load(root: Path | str) -> Config:
         model.backend = os.environ["AGENTKIT_MODEL_BACKEND"]
     if os.environ.get("AGENTKIT_OPENAI_BASE_URL"):        # e.g. https://inference.local/v1 under OpenShell (routed, key-injected inference)
         model.openai_base_url = os.environ["AGENTKIT_OPENAI_BASE_URL"]
+    if os.environ.get("AGENTKIT_OPENAI_MODEL"):           # the model the gateway actually routes to, so receipts and status say the truth
+        model.openai_model = os.environ["AGENTKIT_OPENAI_MODEL"]
     if os.environ.get("AGENTKIT_FALLBACK_OLLAMA_URL") and model.fallback is None:   # standby box without editing a tracked agent.toml
         model.fallback = ModelCfg(backend="ollama", ollama_url=os.environ["AGENTKIT_FALLBACK_OLLAMA_URL"],
                                   ollama_model=os.environ.get("AGENTKIT_FALLBACK_OLLAMA_MODEL", model.ollama_model), ollama_num_ctx=model.ollama_num_ctx)

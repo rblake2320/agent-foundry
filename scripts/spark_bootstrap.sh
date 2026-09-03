@@ -90,7 +90,7 @@ else
   UPLOAD=(); [ -f products/catalog.json ] && UPLOAD=(--upload products/catalog.json:/sandbox/products/catalog.json)
   setsid nohup openshell sandbox create --name "$NAME" --from ./Dockerfile --policy "$AGENT/openshell/policy.yaml" --provider ollama --no-tty \
       "${UPLOAD[@]}" -- \
-      env AGENTKIT_MODEL_BACKEND=openai_compat AGENTKIT_OPENAI_BASE_URL=https://inference.local/v1 \
+      env AGENTKIT_MODEL_BACKEND=openai_compat AGENTKIT_OPENAI_BASE_URL=https://inference.local/v1 AGENTKIT_OPENAI_MODEL="$MODEL" \
       python3 -m agentkit --root "/sandbox/$AGENT" mc --port "$PORT" > "$ROOT/logs/sandbox-$NAME.log" 2>&1 < /dev/null &
   for _ in $(seq 1 90); do openshell sandbox list 2>/dev/null | grep -E "^$NAME\b" | grep -q Ready && break; sleep 5; done
   openshell sandbox list 2>/dev/null | grep -E "^$NAME\b" || fail "sandbox did not become Ready (see logs/sandbox-$NAME.log)"

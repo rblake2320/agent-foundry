@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import platform
 import shlex
 import shutil
@@ -71,25 +72,42 @@ def _run(cmd: list[str], dry: bool) -> int:
     return subprocess.call(cmd)
 
 
+def _ssh_opts(jump: str | None) -> list[str]:
+    return ["-o", f"ProxyCommand=ssh -W %h:%p {jump}"] if jump else []
+
+
 def peer(direction: str, host: str, jump: str | None, with_keys: bool, dry: bool, remote_root: str) -> int:
-    ssh = "ssh" + (f" -J {jump}" if jump else "")
-    rc = 0
-    if not shutil.which("rsync"):   # e.g. Windows: one tar stream over ssh instead of rsync (whole state, still excludes keys)
-        rels = relpaths()
-        excl = [] if with_keys else ["--exclude=keys", "--exclude=*/keys/*"]
-        if direction == "push":
-            cmd = f"tar -C {shlex.quote(ROOT.as_posix())} {' '.join(excl)} -cf - {' '.join(shlex.quote(r) for r in rels)} | {ssh} {shlex.quote(host)} {shlex.quote(f'mkdir -p {remote_root} && tar -xf - -C {remote_root}')}"
-        else:
-            cmd = f"{ssh} {shlex.quote(host)} {shlex.quote(f'tar -C {remote_root} ' + ' '.join(excl) + ' -cf - ' + ' '.join(rels))} | tar -xf - -C {shlex.quote(ROOT.as_posix())}"
-        print("$", cmd)
-        return 0 if dry else subprocess.call(cmd, shell=True)
-    for rel in relpaths():
-        src, dst = (f"{ROOT.as_posix()}/{rel}", f"{host}:{remote_root}/{rel}") if direction == "push" else (f"{host}:{remote_root}/{rel}", f"{ROOT.as_posix()}/{rel}")
-        is_dir = (ROOT / rel).is_dir() if direction == "push" else not rel.endswith(".json")
-        if is_dir:
-            src, dst = src + "/", dst + "/"
-        cmd = ["rsync", "-az", "--mkpath", "-e", ssh] + ([] if with_keys else ["--exclude", "keys/"]) + [src, dst]
-        rc |= _run(cmd, dry)
+    """rsync when available (Linux/macOS); otherwise one tar built with Python's tarfile, moved by scp — no binary stdin over ssh,
+    which is unreliable from Windows shells."""
+    import tarfile
+    import tempfile
+    rels = relpaths()
+    if shutil.which("rsync"):
+        ssh = "ssh " + " ".join(_ssh_opts(jump)) if jump else "ssh"
+        rc = 0
+        for rel in rels:
+            src, dst = (f"{ROOT.as_posix()}/{rel}", f"{host}:{remote_root}/{rel}") if direction == "push" else (f"{host}:{remote_root}/{rel}", f"{ROOT.as_posix()}/{rel}")
+            if (ROOT / rel).is_dir() if direction == "push" else not rel.endswith(".json"):
+                src, dst = src + "/", dst + "/"
+            rc |= _run(["rsync", "-az", "--mkpath", "-e", ssh] + ([] if with_keys else ["--exclude", "keys/"]) + [src, dst], dry)
+        return rc
+    keep = (lambda ti: None if (not with_keys and ("/keys/" in ti.name or ti.name.endswith("/keys"))) else ti)
+    tmp = pathlib.Path(tempfile.gettempdir()) / f"agentkit-state-{platform.node()}.tar"
+    remote_tar = f"/tmp/{tmp.name}"
+    if direction == "push":
+        if not dry:
+            with tarfile.open(tmp, "w") as tf:
+                for rel in rels:
+                    tf.add(ROOT / rel, arcname=rel, filter=keep)
+        rc = _run(["scp", "-q", *_ssh_opts(jump), str(tmp), f"{host}:{remote_tar}"], dry)
+        rc |= _run(["ssh", *_ssh_opts(jump), host, f"mkdir -p {remote_root} && tar -xf {remote_tar} -C {remote_root} && rm -f {remote_tar}"], dry)
+        return rc
+    excl = "" if with_keys else "--exclude=keys "
+    rc = _run(["ssh", *_ssh_opts(jump), host, f"cd {remote_root} && tar {excl}-cf {remote_tar} " + " ".join(rels)], dry)
+    rc |= _run(["scp", "-q", *_ssh_opts(jump), f"{host}:{remote_tar}", str(tmp)], dry)
+    if not dry and rc == 0:
+        with tarfile.open(tmp) as tf:
+            tf.extractall(ROOT, filter="data")
     return rc
 
 
