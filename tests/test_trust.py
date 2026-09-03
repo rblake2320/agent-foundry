@@ -159,10 +159,10 @@ def test_model_failover_to_standby_backend(cfg):
 def test_config_fallback_table(agent_dir):
     toml = (agent_dir / "agent.toml").read_text(encoding="utf-8").replace(
         '[model]\nbackend = "none"',
-        '[model]\nbackend = "ollama"\nollama_url = "http://spark-1:11434"\n\n[model.fallback]\nbackend = "openai_compat"\n'
+        '[model]\nbackend = "ollama"\nollama_url = "http://primary-box:11434"\n\n[model.fallback]\nbackend = "openai_compat"\n'
         'openai_base_url = "https://integrate.api.nvidia.com/v1"\nopenai_model = "nvidia/nemotron-3-super-120b-a12b"')
     (agent_dir / "agent.toml").write_text(toml, encoding="utf-8")
     c = config.load(agent_dir)
-    assert c.model.backend == "ollama" and c.model.ollama_url == "http://spark-1:11434"
+    assert c.model.backend == "ollama" and c.model.ollama_url == "http://primary-box:11434"
     assert c.model.fallback.backend == "openai_compat" and c.model.fallback.openai_model.startswith("nvidia/")
     assert config.load(agent_dir.parent / "probe").model.fallback is not None

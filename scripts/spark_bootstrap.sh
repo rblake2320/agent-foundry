@@ -42,9 +42,12 @@ if ! openshell gateway info >/dev/null 2>&1; then
   [ "$CHECK" = 1 ] && fail "gateway not reachable"
   if openshell gateway --help 2>&1 | grep -qE '^\s+start\b'; then openshell gateway start          # ≤0.0.16: k3s-in-docker gateway
   else
-    # ≥0.0.100: the installer registers a systemd user service with the podman driver; rootless podman needs pasta for gateway callbacks
-    mkdir -p ~/.config/containers
-    grep -q default_rootless_network_cmd ~/.config/containers/containers.conf 2>/dev/null || printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' >> ~/.config/containers/containers.conf
+    # ≥0.0.100: the installer registers a systemd user service that auto-detects Kubernetes → Podman → Docker. Rootless podman
+    # without pasta cannot take gateway callbacks (podman 4.x + CNI), so pin the docker driver when docker is usable.
+    mkdir -p ~/.config/openshell
+    if docker info >/dev/null 2>&1 && ! grep -q OPENSHELL_DRIVERS ~/.config/openshell/gateway.env 2>/dev/null; then
+      echo "OPENSHELL_DRIVERS=docker" >> ~/.config/openshell/gateway.env
+    fi
     systemctl --user restart openshell-gateway
   fi
   for _ in $(seq 1 30); do openshell gateway info >/dev/null 2>&1 && break; sleep 2; done
@@ -81,8 +84,9 @@ else
   [ "$CHECK" = 1 ] && fail "sandbox $NAME missing"
   mkdir -p "$ROOT/logs"
   # the create process stays attached to the sandbox's main command; detach it from this shell so it survives logout
+  UPLOAD=(); [ -f products/catalog.json ] && UPLOAD=(--upload products/catalog.json:/sandbox/products/catalog.json)
   setsid nohup openshell sandbox create --name "$NAME" --from ./Dockerfile --policy "$AGENT/openshell/policy.yaml" --provider ollama --no-tty \
-      --upload products/catalog.json:/sandbox/products/catalog.json -- \
+      "${UPLOAD[@]}" -- \
       env AGENTKIT_MODEL_BACKEND=openai_compat AGENTKIT_OPENAI_BASE_URL=https://inference.local/v1 \
       python3 -m agentkit --root "/sandbox/$AGENT" mc --port "$PORT" > "$ROOT/logs/sandbox-$NAME.log" 2>&1 < /dev/null &
   for _ in $(seq 1 90); do openshell sandbox list 2>/dev/null | grep -E "^$NAME\b" | grep -q Ready && break; sleep 5; done

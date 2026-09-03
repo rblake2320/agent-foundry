@@ -74,6 +74,15 @@ def _run(cmd: list[str], dry: bool) -> int:
 def peer(direction: str, host: str, jump: str | None, with_keys: bool, dry: bool, remote_root: str) -> int:
     ssh = "ssh" + (f" -J {jump}" if jump else "")
     rc = 0
+    if not shutil.which("rsync"):   # e.g. Windows: one tar stream over ssh instead of rsync (whole state, still excludes keys)
+        rels = relpaths()
+        excl = [] if with_keys else ["--exclude=keys", "--exclude=*/keys/*"]
+        if direction == "push":
+            cmd = f"tar -C {shlex.quote(ROOT.as_posix())} {' '.join(excl)} -cf - {' '.join(shlex.quote(r) for r in rels)} | {ssh} {shlex.quote(host)} {shlex.quote(f'mkdir -p {remote_root} && tar -xf - -C {remote_root}')}"
+        else:
+            cmd = f"{ssh} {shlex.quote(host)} {shlex.quote(f'tar -C {remote_root} ' + ' '.join(excl) + ' -cf - ' + ' '.join(rels))} | tar -xf - -C {shlex.quote(ROOT.as_posix())}"
+        print("$", cmd)
+        return 0 if dry else subprocess.call(cmd, shell=True)
     for rel in relpaths():
         src, dst = (f"{ROOT.as_posix()}/{rel}", f"{host}:{remote_root}/{rel}") if direction == "push" else (f"{host}:{remote_root}/{rel}", f"{ROOT.as_posix()}/{rel}")
         is_dir = (ROOT / rel).is_dir() if direction == "push" else not rel.endswith(".json")

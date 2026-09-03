@@ -59,6 +59,43 @@ pre-authorized and get a narrow rule only when the owner approves. The Foundry's
 so a built agent never holds more authority than its builder (the "authority ceiling" OpenShell enforces for subagents).
 Mission Control shows the policy at `/api/openshell`.
 
+## Trust layer: born certified, approvals as mandates, agent recall
+
+Every agentkit agent (the Foundry and everything it builds) carries its own trust material, generated on first use under
+`data/keys/` and never leaving the box unless the owner syncs it:
+
+- **Identity.** An Ed25519 key and a self-certifying `did:agentkit:<slug>:<hash>`, plus a P-256 key for mandates. Both public
+  keys are published in the A2A agent card (`capabilities.extensions[urn:agentkit:identity:1]`).
+- **Evidence at birth.** `agentkit --root X evidence build` (or the Evidence tab, or the Foundry's EVIDENCE phase right after
+  PACKAGE) writes a signed bundle under `data/evidence/<stamp>/`: `manifest.json` + `agent-manifest.yaml` (identity; authority =
+  tools, approval actions, limits; build provenance = spec, core-file and skill hashes; OpenShell policy hash; verification =
+  health, evals, fault injection; ledger checkpoint), the attached eval/fault artifacts, and `signature.json` over every file
+  hash. `evidence verify <dir>` checks a bundle offline with nothing but the public key. The format is `agentkit-evidence/1`:
+  ours and documented, not a claim of conformance to any third-party certification scheme.
+- **Approvals as mandates.** When the owner approves an action (Mission Control, CLI or `/api/approvals/{id}/approve`) the
+  approval is issued as an SD-JWT signed with the agent's P-256 key (ES256): selectively-disclosable claims (action, target,
+  payload hash, approver, rationale, approval id), `cnf` key binding, `iat`/`exp`. It is shaped after AP2 mandates so a
+  payments or trust rail can consume it, and verifiable offline via `agentkit mandate <id>` or `/api/mandates/{id}`. It has not
+  been interop-tested against a live AP2 credential provider; that is stated plainly rather than implied.
+- **Agent recall.** Revocation standards stop at "the action was logged"; recall answers what happened to the *work*. Every
+  record carries the run that created it and links to related records by id; approvals point at their targets.
+  `agentkit recall impact --type run|record|approval|model|task|skill <seed>` previews everything reachable;
+  `recall issue --reason ...` quarantines those records (status becomes `recalled`, the prior status is kept), denies dependent
+  pending/approved approvals and writes a signed advisory under `data/advisories/` (ledger event `recall_issued`);
+  `recall lift <advisory>` restores the records (denied approvals stay denied). Reachability is deliberately conservative
+  (id-linked records are one unit of work) because the owner previews before issuing and lift is cheap.
+
+## No single point of failure
+
+- **Inference.** `[model.fallback]` in `agent.toml` names a second backend (another Ollama host, a cloud NIM, ...). If the primary is
+  unreachable or errors mid-run, the client fails over for the rest of the run and the receipt records `model_failovers` and why.
+- **Runtime.** `scripts/spark_bootstrap.sh` rebuilds the OpenShell gateway, provider, inference route, policy, sandbox and
+  port-forward on a fresh Linux box from zero, idempotently (`--check` audits, `--recreate` rebuilds the sandbox from current
+  code). Run it on the standby box and the agent comes up there.
+- **State.** `scripts/sync_state.py` pushes or pulls every agent's `data/` (records, ledger, evidence, advisories), `reports/`
+  and the catalogue to a peer over rsync/ssh or to S3 (`status` shows what and how fresh). Keys stay put unless `--with-keys`.
+  Every sync is itself a ledger event (`state_synced`), so the ledger records where its own copies are.
+
 ## The first product: Agent Seller
 
 Commission `foundry/commissions/001-agent-seller.json` builds `products/agent-seller/`: a sales worker that reads the
