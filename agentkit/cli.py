@@ -160,12 +160,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "mc":
         import uvicorn
         from .mc import create_app
+        import os
+        # overload sheds fast (HTTP 503) instead of queueing into multi-second tails; access log off unless asked (it is the hottest write under load)
+        serve_opts = {"log_level": "info", "access_log": os.environ.get("AGENTKIT_MC_ACCESS_LOG") == "1", "backlog": 4096, "timeout_keep_alive": 5,
+                      "limit_concurrency": int(os.environ.get("AGENTKIT_MC_LIMIT_CONCURRENCY", "512"))}
         if args.workers > 1:
-            import os
             os.environ["AGENTKIT_ROOT"] = str(root)
-            uvicorn.run("agentkit.mc:app_from_env", factory=True, workers=args.workers, host=cfg.mc_host, port=args.port or cfg.mc_port, log_level="info")
+            uvicorn.run("agentkit.mc:app_from_env", factory=True, workers=args.workers, host=cfg.mc_host, port=args.port or cfg.mc_port, **serve_opts)
         else:
-            uvicorn.run(create_app(cfg, worker_cls, panels), host=cfg.mc_host, port=args.port or cfg.mc_port, log_level="info")
+            uvicorn.run(create_app(cfg, worker_cls, panels), host=cfg.mc_host, port=args.port or cfg.mc_port, **serve_opts)
         return 0
     if args.cmd == "evidence":
         from . import evidence

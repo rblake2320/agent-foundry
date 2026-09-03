@@ -3,6 +3,7 @@ Generic tabs (Overview, Tasks, Runs, Approvals, Activity, Brain, Schedule, Docto
 panels (collections rendered as tables with optional actions) and an A2A agent card at /.well-known/agent-card.json."""
 from __future__ import annotations
 
+import functools
 import json
 import os
 import threading
@@ -103,39 +104,44 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
 
     app = FastAPI(title=f"{cfg.agent.name} — Mission Control", version=cfg.agent.version)
 
-    # Read micro-cache: identical GETs within CACHE_TTL_S share one computed response. A dashboard fan-out or 500 pollers then cost one
-    # query per second instead of 500, and a write (any non-GET) clears the cache so nothing stale outlives the next action.
-    cache: dict[str, tuple[float, int, bytes, str]] = {}
-    cache_lock = threading.Lock()
+    # Read micro-cache at the endpoint level: identical GETs within CACHE_TTL_S share one computed result, so a dashboard fan-out or
+    # 500 pollers cost one query per second instead of 500. Writes bump `generation`, which invalidates every cached read at once.
     CACHE_TTL_S = float(os.environ.get("AGENTKIT_MC_CACHE_TTL", "1.0"))
+    cache: dict = {}
+    cache_lock = threading.Lock()
+    gen = {"n": 0}
 
-    @app.middleware("http")
-    async def read_cache(request, call_next):
-        key = str(request.url)
-        cacheable = request.method == "GET" and (request.url.path.startswith("/api/") or request.url.path.startswith("/.well-known/")) and CACHE_TTL_S > 0
-        if cacheable:
+    def bump() -> None:
+        with cache_lock:
+            gen["n"] += 1
+            cache.clear()
+
+    def cached(fn):
+        if CACHE_TTL_S <= 0:
+            return fn
+
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            # the cached value is the serialized JSON body: serialization is the dominant cost for list endpoints, so it is paid once per TTL
+            key = (fn.__name__, a, tuple(sorted(kw.items())), gen["n"])
             hit = cache.get(key)
-            if hit and time.time() - hit[0] < CACHE_TTL_S:
-                return Response(content=hit[2], status_code=hit[1], media_type=hit[3], headers={"X-Cache": "hit"})
-        response = await call_next(request)
-        if not cacheable:
-            if request.method != "GET":
-                with cache_lock:
-                    cache.clear()
-            return response
-        body = b"".join([chunk async for chunk in response.body_iterator])
-        if response.status_code == 200:
+            now = time.time()
+            if hit and now - hit[0] < CACHE_TTL_S:
+                return Response(content=hit[1], media_type="application/json", headers={"X-Cache": "hit"})
+            body = json.dumps(fn(*a, **kw), default=str, ensure_ascii=False, separators=(",", ":")).encode()
             with cache_lock:
                 if len(cache) > 512:
                     cache.clear()
-                cache[key] = (time.time(), response.status_code, body, response.media_type or "application/json")
-        return Response(content=body, status_code=response.status_code, media_type=response.media_type, headers={k: v for k, v in response.headers.items() if k.lower() not in ("content-length",)})
+                cache[key] = (now, body)
+            return Response(content=body, media_type="application/json")
+        return wrapper
 
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html")
 
     @app.get("/.well-known/agent-card.json")
+    @cached
     def card():
         return JSONResponse(agent_card(cfg), media_type="application/json")
 
@@ -156,6 +162,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
                 "receipt": res.get("receipt")}
 
     @app.get("/api/status")
+    @cached
     def status():
         w = state["worker"]
         running = bool(state["thread"] and state["thread"].is_alive())
@@ -174,6 +181,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
                 "collections": store.collection_counts(), "ledger": ledger.verify_cached()}
 
     @app.get("/api/runs")
+    @cached
     def runs(limit: int = 50):
         return store.list_runs(limit=limit)
 
@@ -193,6 +201,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         t = threading.Thread(target=w.run, kwargs={"task": req.task, "input_text": req.input}, daemon=True)
         state.update({"worker": w, "thread": t})
         t.start()
+        bump()
         ledger.append("run_requested", None, source="mission_control", task=req.task)
         return {"started": True}
 
@@ -210,15 +219,18 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         return {"running": bool(state["thread"] and state["thread"].is_alive()), "progress": w.progress if w else None}
 
     @app.get("/api/tasks")
+    @cached
     def tasks():
         return brain.list_tasks(cfg)
 
     @app.get("/api/tools")
+    @cached
     def tools():
         return [{"name": t.name, "description": t.description, "args": t.args, "risk": t.risk, "approval_action": t.approval_action}
                 for t in allowed_tools(cfg).values()] + [{"name": n, "available": False} for n in cfg.tools_allowed if n not in REGISTRY]
 
     @app.get("/api/approvals")
+    @cached
     def list_approvals(status: str | None = None, limit: int = Query(200, le=2000)):
         rows = store.list_approvals(status, limit=limit)
         for a in rows:
@@ -228,6 +240,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     @app.post("/api/approvals/{aid}/approve", dependencies=[Depends(require_token)])
     def approve(aid: int, execute: bool = True):
         try:
+            bump()
             a = approvals.decide(store, ledger, aid, True, who="mission_control", cfg=cfg)
             return approvals.execute(cfg, store, ledger, aid) if execute else {"approval": a}
         except (KeyError, ValueError) as e:
@@ -236,11 +249,13 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     @app.post("/api/approvals/{aid}/deny", dependencies=[Depends(require_token)])
     def deny(aid: int):
         try:
+            bump()
             return approvals.decide(store, ledger, aid, False, who="mission_control")
         except (KeyError, ValueError) as e:
             raise HTTPException(400, str(e))
 
     @app.get("/api/activity")
+    @cached
     def activity(limit: int = Query(200, le=5000), run: str | None = None):
         return ledger.read(limit=limit, run_id=run)
 
@@ -265,6 +280,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         if name not in cfg.core_files:
             raise HTTPException(404)
         cfg.core_files[name].write_text(req.content, encoding="utf-8")
+        bump()
         ledger.append("brain_edited", None, file=name, chars=len(req.content), by="mission_control")
         return {"ok": True}
 
@@ -378,6 +394,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
 
     # ---- trust: evidence at birth, approvals as mandates, agent recall
     @app.get("/api/evidence")
+    @cached
     def evidence_index():
         from .evidence import latest_bundle
         return {"identity": KeyStore(cfg).public_record(), "latest": latest_bundle(cfg, store), "bundles": store.list("evidence", limit=20)}
@@ -386,6 +403,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     def evidence_build():
         from .evidence import build_bundle, verify_bundle
         out = build_bundle(cfg, store, ledger)
+        bump()
         return {"stamp": out.name, "dir": str(out), "verify": verify_bundle(out)}
 
     @app.get("/api/evidence/{stamp}")
@@ -407,6 +425,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         return {"approval_id": aid, "mandate": a["mandate"], "verify": verify_mandate(a["mandate"])}
 
     @app.get("/api/recall")
+    @cached
     def recall_list():
         return store.list("advisories", limit=100)
 
@@ -422,6 +441,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     def recall_issue(req: RecallRequest):
         from . import recall
         try:
+            bump()
             return recall.recall(cfg, store, ledger, req.seed_type, req.seed, req.reason, actor="mission_control")
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -430,12 +450,14 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     def recall_lift(advisory_id: str, req: LiftRequest):
         from . import recall
         try:
+            bump()
             return recall.lift(cfg, store, ledger, advisory_id, req.reason, actor="mission_control")
         except (KeyError, ValueError) as e:
             raise HTTPException(400, str(e))
 
     # ---- documents (agent-specific panels)
     @app.get("/api/docs/{collection}")
+    @cached
     def docs_list(collection: str, limit: int = Query(500, le=5000), status: str | None = None):
         return store.list(collection, limit=limit, **({"status": status} if status else {}))
 
@@ -452,12 +474,14 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         merged = {k: v for k, v in old.items() if not k.startswith("_") and k != "id"}
         merged.update(req.fields)
         store.put(collection, doc_id, merged)
+        bump()
         ledger.append("doc_edited", None, collection=collection, id=doc_id, by="mission_control", fields=list(req.fields))
         return store.get(collection, doc_id)
 
     @app.delete("/api/docs/{collection}/{doc_id}", dependencies=[Depends(require_token)])
     def docs_delete(collection: str, doc_id: str):
         store.delete(collection, doc_id)
+        bump()
         ledger.append("doc_deleted", None, collection=collection, id=doc_id, by="mission_control")
         return {"ok": True}
 
@@ -467,6 +491,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         for p in panels:
             if p["collection"] == collection and p.get("handler"):
                 try:
+                    bump()
                     return p["handler"](cfg, store, ledger, doc_id, action_id)
                 except (KeyError, ValueError) as e:
                     raise HTTPException(400, str(e))
