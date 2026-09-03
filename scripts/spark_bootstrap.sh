@@ -99,8 +99,9 @@ fi
 step "8/8 forward :$PORT → sandbox Mission Control + health"
 if ! curl -sf -m 3 "http://127.0.0.1:$PORT/api/status" >/dev/null; then
   [ "$CHECK" = 1 ] && fail "Mission Control not answering on :$PORT"
-  # forward start maps local PORT to the same PORT inside the sandbox (Mission Control was started on it above)
-  setsid nohup openshell forward start -d "$PORT" "$NAME" > "$ROOT/logs/forward-$NAME.log" 2>&1 < /dev/null &
+  # forward start maps local PORT to the same PORT inside the sandbox. Foreground mode under setsid/nohup: the -d background
+  # child dies with the SSH session on 0.0.1x, a detached foreground process does not
+  setsid nohup openshell forward start "$PORT" "$NAME" > "$ROOT/logs/forward-$NAME.log" 2>&1 < /dev/null &
   for _ in $(seq 1 30); do curl -sf -m 3 "http://127.0.0.1:$PORT/api/status" >/dev/null && break; sleep 2; done
 fi
 curl -sf -m 5 "http://127.0.0.1:$PORT/api/status" | python3 -c "import sys,json; s=json.load(sys.stdin); print('Mission Control:', s['agent']['name'], 'model', s['model'], 'ledger', s['ledger'])" \
