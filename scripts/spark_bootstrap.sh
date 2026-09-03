@@ -99,9 +99,18 @@ fi
 step "8/8 forward :$PORT → sandbox Mission Control + health"
 if ! curl -sf -m 3 "http://127.0.0.1:$PORT/api/status" >/dev/null; then
   [ "$CHECK" = 1 ] && fail "Mission Control not answering on :$PORT"
-  # forward start maps local PORT to the same PORT inside the sandbox. Foreground mode under setsid/nohup: the -d background
-  # child dies with the SSH session on 0.0.1x, a detached foreground process does not
-  setsid nohup openshell forward start "$PORT" "$NAME" > "$ROOT/logs/forward-$NAME.log" 2>&1 < /dev/null &
+  # forward start maps local PORT to the same PORT inside the sandbox. The forward is an SSH tunnel that drops after idle hours
+  # (0.0.1x: "client_loop: send disconnect: Broken pipe"), so it runs as a systemd user service with Restart=always; without
+  # systemd it falls back to a detached foreground process (the -d background child dies with the SSH session).
+  if systemctl --user daemon-reload >/dev/null 2>&1; then
+    mkdir -p ~/.config/systemd/user
+    printf '[Unit]\nDescription=OpenShell port-forward %s -> sandbox %s (Mission Control)\nAfter=default.target\n[Service]\nExecStart=%s forward start %s %s\nRestart=always\nRestartSec=5\n[Install]\nWantedBy=default.target\n' \
+      "$PORT" "$NAME" "$(command -v openshell)" "$PORT" "$NAME" > ~/.config/systemd/user/openshell-forward-$NAME.service
+    loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+    systemctl --user daemon-reload && systemctl --user enable --now "openshell-forward-$NAME" >/dev/null 2>&1
+  else
+    setsid nohup openshell forward start "$PORT" "$NAME" > "$ROOT/logs/forward-$NAME.log" 2>&1 < /dev/null &
+  fi
   for _ in $(seq 1 30); do curl -sf -m 3 "http://127.0.0.1:$PORT/api/status" >/dev/null && break; sleep 2; done
 fi
 curl -sf -m 5 "http://127.0.0.1:$PORT/api/status" | python3 -c "import sys,json; s=json.load(sys.stdin); print('Mission Control:', s['agent']['name'], 'model', s['model'], 'ledger', s['ledger'])" \
