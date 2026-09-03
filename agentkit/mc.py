@@ -109,6 +109,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     CACHE_TTL_S = float(os.environ.get("AGENTKIT_MC_CACHE_TTL", "1.0"))
     cache: dict = {}
     cache_lock = threading.Lock()
+    compute_locks: dict[str, threading.Lock] = {}
     gen = {"n": 0}
 
     def bump() -> None:
@@ -128,11 +129,16 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
             now = time.time()
             if hit and now - hit[0] < CACHE_TTL_S:
                 return Response(content=hit[1], media_type="application/json", headers={"X-Cache": "hit"})
-            body = json.dumps(fn(*a, **kw), default=str, ensure_ascii=False, separators=(",", ":")).encode()
-            with cache_lock:
-                if len(cache) > 512:
-                    cache.clear()
-                cache[key] = (now, body)
+            with compute_locks.setdefault(fn.__name__, threading.Lock()):   # single flight: 500 simultaneous misses compute once
+                hit = cache.get(key)
+                if hit and time.time() - hit[0] < CACHE_TTL_S:
+                    return Response(content=hit[1], media_type="application/json", headers={"X-Cache": "hit"})
+                val = fn(*a, **kw)
+                body = bytes(val.body) if isinstance(val, Response) else json.dumps(val, default=str, ensure_ascii=False, separators=(",", ":")).encode()
+                with cache_lock:
+                    if len(cache) > 512:
+                        cache.clear()
+                    cache[key] = (time.time(), body)
             return Response(content=body, media_type="application/json")
         return wrapper
 
@@ -329,7 +335,9 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         from .health import health_report
         import time as _t
         if _health_cache["value"] is None or _t.time() - _health_cache["at"] > 10:
-            _health_cache.update(value=health_report(cfg), at=_t.time())
+            with compute_locks.setdefault("health", threading.Lock()):     # single flight on expiry
+                if _health_cache["value"] is None or _t.time() - _health_cache["at"] > 10:
+                    _health_cache.update(value=health_report(cfg), at=_t.time())
         return _health_cache["value"]
 
     @app.get("/api/evals")
