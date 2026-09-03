@@ -112,7 +112,9 @@ Every agentkit agent (the Foundry and everything it builds) carries its own trus
   restart the gateway, stop/start the sandbox) and records recovery time in the ledger. Agent-level fault injection stays in `agentkit faults`.
 - **Serving.** `agentkit mc --workers N` scales reads across processes on Linux (run state is in the store, so one run at a time is still
   enforced); reads are served from a 1 s cache of serialized bodies with single-flight recompute and write invalidation; overload sheds
-  fast with HTTP 503 (`AGENTKIT_MC_LIMIT_CONCURRENCY`, default 512 per worker). Do not use `--workers > 1` on Windows.
+  fast with HTTP 503 (`AGENTKIT_MC_LIMIT_CONCURRENCY`, default 512 per worker). Do not use `--workers > 1` on Windows. On Linux, run
+  `uvicorn[standard]` (uvloop + httptools, in requirements): with plain asyncio + h11, multi-worker serving shows a 42 ms latency floor on
+  small responses (delayed-ACK/Nagle); measured with it, 4 workers give 100 concurrent readers p95 ≤ 24 ms at 7–14k req/s, 0 errors.
 
 ## The first product: Agent Seller
 
