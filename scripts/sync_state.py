@@ -24,6 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 sys.path.insert(0, str(ROOT))
 
 AWS = shutil.which("aws") or shutil.which("aws.cmd") or "aws"   # Windows installs expose aws.cmd
@@ -134,7 +138,7 @@ def main() -> int:
         target = f"s3://{a.bucket}/{a.prefix}"
     if not a.dry_run:
         record(a.mode, target, a.direction, rc, a.with_keys)
-    print(f"{a.mode} {a.direction} → {target}: {'OK' if rc == 0 else 'FAILED'} ({len(relpaths())} items, {round(time.time() - t0, 1)}s)")
+    print(f"{a.mode} {a.direction} -> {target}: {'OK' if rc == 0 else 'FAILED'} ({len(relpaths())} items, {round(time.time() - t0, 1)}s)")
     return rc
 
 
