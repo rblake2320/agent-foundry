@@ -12,3 +12,4 @@ scripts/run_*.sh
 products/catalog.json
 products/published/
 products/.*keep/
+logs/

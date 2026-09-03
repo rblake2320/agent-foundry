@@ -19,6 +19,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(KIT_ROOT))
 
 from agentkit import brain  # noqa: E402
+from agentkit import config as kconfig, evidence as kevidence  # noqa: E402
+from agentkit.keys import KeyStore  # noqa: E402
 from agentkit.approvals import executor  # noqa: E402
 from agentkit.model import BudgetExceeded, ModelClient, ModelError  # noqa: E402
 from agentkit.worker import Halt, Worker as BaseWorker  # noqa: E402
@@ -232,6 +234,17 @@ class Worker(BaseWorker):
                  "tags": sorted({s for t in spec["tasks"] for s in t.get("skills", [])})}
         self.store.put("catalog", spec["slug"], entry)
         _write_catalog_file(cfg, self.store)
+        # EVIDENCE — born certified: the product signs its own evidence bundle (identity, authority, build hashes, verification, ledger)
+        self.tick("EVIDENCE", f"{cid}: signed evidence bundle")
+        pcfg = kconfig.load(dest)
+        bundle = kevidence.build_bundle(pcfg)
+        ev = kevidence.verify_bundle(bundle)
+        entry.update({"did": KeyStore(pcfg).did, "evidence": str(bundle), "evidence_ok": ev["ok"]})
+        self.store.put("catalog", spec["slug"], entry)
+        _write_catalog_file(cfg, self.store)
+        self.ledger.append("evidence_bundle", run_id, commission=cid, slug=spec["slug"], path=str(bundle), ok=ev["ok"], signer=ev["signer"])
+        if not ev["ok"]:
+            raise RuntimeError("evidence bundle failed self-verification: " + "; ".join(ev["reasons"]))
         # PROPOSE
         self.tick("PROPOSE", f"{cid}: approvals")
         proposed = []
@@ -244,6 +257,7 @@ class Worker(BaseWorker):
                  f"- Verification: PASS on all five gates (smoke run {ver['gates']['smoke'].get('run_id')})\n"
                  f"- Package: `{zip_path.name}` sha256 `{sha[:16]}…`, {manifest['files']} files\n"
                  f"- Pricing card: {spec['pricing']['model']} {spec['pricing']['price']} per {spec['pricing']['unit']}\n"
+                 f"- Evidence: signed bundle `{bundle.name}` by `{entry['did']}` (self-verified {'OK' if ev['ok'] else 'FAIL'})\n"
                  f"- Approvals proposed: #{', #'.join(str(p) for p in proposed)} (publish / deploy / launch) — nothing executed\n"
                  f"- Build time: {round(time.time() - t0, 1)}s")
         return {"task": f"commission {cid}", "status": "done", "final": final, "steps": 7, "tool_calls": 0, "model_calls": 0,

@@ -29,6 +29,7 @@ class ModelCfg:
     openai_base_url: str = "https://integrate.api.nvidia.com/v1"   # NVIDIA NIM cloud by default; point at a local NIM for on-prem
     openai_model: str = "nvidia/nemotron-3-super-120b-a12b"
     openai_api_key_env: str = "NVIDIA_API_KEY"                      # the key is read from this env var, never from the file
+    fallback: "ModelCfg | None" = None                              # [model.fallback]: takes over for the rest of a run if the primary fails
 
 
 @dataclass
@@ -93,9 +94,15 @@ def load(root: Path | str) -> Config:
     path = root / "agent.toml"
     with open(path, "rb") as f:
         raw = tomllib.load(f)
-    model = _dc(ModelCfg, raw.get("model", {}))
+    mraw = dict(raw.get("model", {}))
+    fb = mraw.pop("fallback", None)
+    model = _dc(ModelCfg, mraw)
+    if isinstance(fb, dict) and fb.get("backend", "none") != "none":
+        model.fallback = _dc(ModelCfg, fb)
     if os.environ.get("AGENTKIT_MODEL_BACKEND"):
         model.backend = os.environ["AGENTKIT_MODEL_BACKEND"]
+    if os.environ.get("AGENTKIT_OPENAI_BASE_URL"):        # e.g. https://inference.local/v1 under OpenShell (routed, key-injected inference)
+        model.openai_base_url = os.environ["AGENTKIT_OPENAI_BASE_URL"]
     paths = raw.get("paths", {})
     mc = raw.get("mission_control", {})
     return Config(

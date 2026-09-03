@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from . import approvals, brain, doctor, schedule
 from .config import Config
+from .keys import KeyStore
 from .ledger import Ledger
 from .model import BudgetExceeded, ModelClient, ModelError
 from .store import Store
@@ -48,6 +49,16 @@ class A2AMessage(BaseModel):
     input: str = ""
 
 
+class RecallRequest(BaseModel):
+    seed_type: str
+    seed: str
+    reason: str
+
+
+class LiftRequest(BaseModel):
+    reason: str
+
+
 def agent_card(cfg: Config) -> dict:
     """A2A v1.0 Agent Card: one skill per task, HTTP+JSON interface at /a2a."""
     tasks = brain.list_tasks(cfg)
@@ -58,7 +69,9 @@ def agent_card(cfg: Config) -> dict:
         "provider": {"organization": cfg.agent.organization, "url": f"http://{cfg.mc_host}:{cfg.mc_port}/"},
         "version": cfg.agent.version,
         "documentationUrl": f"http://{cfg.mc_host}:{cfg.mc_port}/",
-        "capabilities": {"streaming": False, "pushNotifications": False, "extendedAgentCard": False},
+        "capabilities": {"streaming": False, "pushNotifications": False, "extendedAgentCard": False,
+                         "extensions": [{"uri": "urn:agentkit:identity:1", "description": "Agent identity (DID, Ed25519 evidence key, P-256 mandate key); "
+                                         "evidence bundles at /api/evidence, mandates at /api/mandates/{approval}", "params": KeyStore(cfg).public_record()}]},
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/markdown", "application/json"],
         "skills": [{"id": t["name"], "name": t["name"].replace("-", " ").title(), "description": t.get("description") or t["body"][:200].strip(),
@@ -186,7 +199,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
     @app.post("/api/approvals/{aid}/approve", dependencies=[Depends(require_token)])
     def approve(aid: int, execute: bool = True):
         try:
-            a = approvals.decide(store, ledger, aid, True, who="mission_control")
+            a = approvals.decide(store, ledger, aid, True, who="mission_control", cfg=cfg)
             return approvals.execute(cfg, store, ledger, aid) if execute else {"approval": a}
         except (KeyError, ValueError) as e:
             raise HTTPException(400, str(e))
@@ -327,6 +340,64 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
             raise HTTPException(502, str(e))
         ledger.append("chat", None, question=req.question[:200], model=model.name)
         return {"answer": answer, "usage": model.usage()}
+
+    # ---- trust: evidence at birth, approvals as mandates, agent recall
+    @app.get("/api/evidence")
+    def evidence_index():
+        from .evidence import latest_bundle
+        return {"identity": KeyStore(cfg).public_record(), "latest": latest_bundle(cfg, store), "bundles": store.list("evidence", limit=20)}
+
+    @app.post("/api/evidence/build", dependencies=[Depends(require_token)])
+    def evidence_build():
+        from .evidence import build_bundle, verify_bundle
+        out = build_bundle(cfg, store, ledger)
+        return {"stamp": out.name, "dir": str(out), "verify": verify_bundle(out)}
+
+    @app.get("/api/evidence/{stamp}")
+    def evidence_get(stamp: str):
+        from .evidence import verify_bundle
+        b = store.get("evidence", stamp)
+        if not b or not Path(b["dir"]).exists():
+            raise HTTPException(404)
+        d = Path(b["dir"])
+        return {"stamp": stamp, "verify": verify_bundle(d), "manifest": json.loads((d / "manifest.json").read_text(encoding="utf-8")),
+                "manifest_yaml": (d / "agent-manifest.yaml").read_text(encoding="utf-8"), "signature": json.loads((d / "signature.json").read_text(encoding="utf-8"))}
+
+    @app.get("/api/mandates/{aid}")
+    def mandate_get(aid: int):
+        from .mandates import verify_mandate
+        a = store.get_approval(aid)
+        if not a or not a.get("mandate"):
+            raise HTTPException(404, "no mandate: approval not found or not approved")
+        return {"approval_id": aid, "mandate": a["mandate"], "verify": verify_mandate(a["mandate"])}
+
+    @app.get("/api/recall")
+    def recall_list():
+        return store.list("advisories", limit=100)
+
+    @app.get("/api/recall/impact")
+    def recall_impact(seed_type: str, seed: str):
+        from . import recall
+        try:
+            return recall.impact(cfg, store, ledger, seed_type, seed)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/recall", dependencies=[Depends(require_token)])
+    def recall_issue(req: RecallRequest):
+        from . import recall
+        try:
+            return recall.recall(cfg, store, ledger, req.seed_type, req.seed, req.reason, actor="mission_control")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/recall/{advisory_id}/lift", dependencies=[Depends(require_token)])
+    def recall_lift(advisory_id: str, req: LiftRequest):
+        from . import recall
+        try:
+            return recall.lift(cfg, store, ledger, advisory_id, req.reason, actor="mission_control")
+        except (KeyError, ValueError) as e:
+            raise HTTPException(400, str(e))
 
     # ---- documents (agent-specific panels)
     @app.get("/api/docs/{collection}")

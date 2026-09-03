@@ -62,6 +62,16 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--time")
     m = sub.add_parser("mc", help="start Mission Control")
     m.add_argument("--port", type=int)
+    ev = sub.add_parser("evidence", help="signed evidence bundle: build | verify <dir> | show (identity + latest bundle)")
+    ev.add_argument("action", nargs="?", choices=["build", "verify", "show"], default="build")
+    ev.add_argument("path", nargs="?")
+    rc = sub.add_parser("recall", help="agent recall: impact | issue | lift | verify — quarantine everything derived from a bad seed")
+    rc.add_argument("action", choices=["impact", "issue", "lift", "verify"])
+    rc.add_argument("seed", help="run id | collection/id | approval id | model | task | skill; advisory id for lift; file for verify")
+    rc.add_argument("--type", default="run", choices=["run", "record", "approval", "model", "task", "skill"])
+    rc.add_argument("--reason", default="")
+    md = sub.add_parser("mandate", help="show + verify the signed SD-JWT mandate issued when an approval was approved")
+    md.add_argument("id", type=int)
     c = sub.add_parser("chat", help="ask the agent about its state (read-only)")
     c.add_argument("question")
     args = ap.parse_args(argv)
@@ -135,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.id is None:
             ap.error("approval id required")
         if args.action in ("approve", "deny"):
-            print(json.dumps(approvals.decide(store, ledger, args.id, args.action == "approve", who="cli"), default=str, indent=2))
+            print(json.dumps(approvals.decide(store, ledger, args.id, args.action == "approve", who="cli", cfg=cfg), default=str, indent=2))
             return 0
         res = approvals.execute(cfg, store, ledger, args.id, dry_run=args.dry_run)
         print(json.dumps(res, default=str, indent=2))
@@ -150,6 +160,44 @@ def main(argv: list[str] | None = None) -> int:
         from .mc import create_app
         uvicorn.run(create_app(cfg, worker_cls, panels), host=cfg.mc_host, port=args.port or cfg.mc_port, log_level="info")
         return 0
+    if args.cmd == "evidence":
+        from . import evidence
+        from .keys import KeyStore
+        if args.action == "build":
+            out = evidence.build_bundle(cfg, store, ledger)
+            v = evidence.verify_bundle(out)
+            print(json.dumps({"bundle": str(out), **v}, indent=2))
+            return 0 if v["ok"] else 1
+        if args.action == "verify":
+            v = evidence.verify_bundle(Path(args.path or (evidence.latest_bundle(cfg, store) or {}).get("dir", "")))
+            print(json.dumps(v, indent=2))
+            return 0 if v["ok"] else 1
+        print(json.dumps({"identity": KeyStore(cfg).public_record(), "latest": evidence.latest_bundle(cfg, store)}, indent=2, default=str))
+        return 0
+    if args.cmd == "recall":
+        from . import recall
+        if args.action == "impact":
+            print(json.dumps(recall.impact(cfg, store, ledger, args.type, args.seed), indent=2, default=str))
+            return 0
+        if args.action == "issue":
+            if not args.reason:
+                ap.error("--reason is required to issue a recall")
+            r = recall.recall(cfg, store, ledger, args.type, args.seed, args.reason, actor="cli")
+            print(json.dumps({k: v for k, v in r["advisory"].items() if k != "affected"} | {"counts": r["counts"]}, indent=2, default=str))
+            return 0
+        if args.action == "lift":
+            print(json.dumps(recall.lift(cfg, store, ledger, args.seed, args.reason or "lifted via cli", actor="cli"), indent=2))
+            return 0
+        print(json.dumps(recall.verify_advisory(Path(args.seed)), indent=2))
+        return 0
+    if args.cmd == "mandate":
+        from .mandates import verify_mandate
+        a = store.get_approval(args.id)
+        if not a or not a.get("mandate"):
+            print("no mandate: approval not found or not approved"); return 1
+        v = verify_mandate(a["mandate"])
+        print(json.dumps({"approval": args.id, "mandate": a["mandate"], "verify": v}, indent=2))
+        return 0 if v["ok"] else 1
     if args.cmd == "chat":
         from .mc import chat_answer
         try:

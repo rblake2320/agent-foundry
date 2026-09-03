@@ -27,15 +27,22 @@ def describe(action: str, target: str, payload: dict | None) -> str:
     return f"{action} → {target}: {doc}"
 
 
-def decide(store: Store, ledger: Ledger, aid: int, approve: bool, who: str = "owner") -> dict:
+def decide(store: Store, ledger: Ledger, aid: int, approve: bool, who: str = "owner", cfg=None) -> dict:
+    """Record the owner's decision. With `cfg`, an approval is also issued as a signed SD-JWT mandate (mandates.py), so
+    "the owner approved this" is a portable, offline-verifiable proof rather than only a ledger line."""
     a = store.get_approval(aid)
     if not a:
         raise KeyError(aid)
     if a["status"] != "pending":
         raise ValueError(f"approval {aid} is {a['status']}, not pending")
     store.decide_approval(aid, "approved" if approve else "denied")
+    mandate_kid = None
+    if approve and cfg is not None:
+        from .mandates import issue_approval_mandate
+        store.set_mandate(aid, issue_approval_mandate(cfg, a, approver=who))
+        mandate_kid = f"{cfg.agent.slug}-mandate-key-1"
     ledger.append("approval_decided", a.get("run_id"), approval_id=aid, action=a["action"], target=a["target"],
-                  decision="approved" if approve else "denied", by=who)
+                  decision="approved" if approve else "denied", by=who, mandate_kid=mandate_kid)
     return store.get_approval(aid)
 
 

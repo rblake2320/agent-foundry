@@ -109,6 +109,7 @@ class Worker:
         self.tick("REPORT", "writing report")
         u = model.usage()
         receipt.update({"model_calls": u["calls"], "tokens_in": u["tokens_in"], "tokens_out": u["tokens_out"],
+                        "model_final": u["model"], "model_failovers": u["failovers"], "model_failover_reason": u["failover_reason"],
                         "duration_s": round(time.time() - self.t0, 1), "tasks_done": sum(1 for r in results if r.get("status") == "done"),
                         "tool_calls": sum(r.get("tool_calls", 0) for r in results)})
         pending = self.store.list_approvals(status="pending")

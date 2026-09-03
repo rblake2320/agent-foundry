@@ -47,6 +47,8 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.conn() as c:
             c.executescript(SCHEMA)
+            if "mandate" not in [r[1] for r in c.execute("PRAGMA table_info(approvals)")]:
+                c.execute("ALTER TABLE approvals ADD COLUMN mandate TEXT")
 
     @contextmanager
     def conn(self):
@@ -106,6 +108,10 @@ class Store:
     def decide_approval(self, aid: int, status: str) -> None:
         with self.conn() as c:
             c.execute("UPDATE approvals SET status=?, decided_at=? WHERE id=?", (status, now(), aid))
+
+    def set_mandate(self, aid: int, sd_jwt: str) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE approvals SET mandate=? WHERE id=?", (sd_jwt, aid))
 
     def record_execution(self, aid: int, status: str, result: str) -> None:
         with self.conn() as c:
