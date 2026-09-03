@@ -68,6 +68,11 @@ ollama_model = "qwen3.8:27b"
 ollama_url = "http://localhost:11434"
 ollama_num_ctx = 16384
 claude_model = "sonnet"
+# Standby inference (no single point of failure): uncomment, or set AGENTKIT_FALLBACK_OLLAMA_URL / AGENTKIT_FALLBACK_OLLAMA_MODEL.
+# [model.fallback]
+# backend = "ollama"
+# ollama_url = "http://standby-box:11434"
+# ollama_model = "qwen3.8:27b"
 
 [limits]
 max_model_calls_per_run = {int(lim["max_model_calls_per_run"])}
