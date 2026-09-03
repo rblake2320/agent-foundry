@@ -6,10 +6,11 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from . import approvals, brain, doctor, schedule
@@ -83,7 +84,7 @@ def agent_card(cfg: Config) -> dict:
 def chat_answer(cfg: Config, store: Store, model: ModelClient, question: str) -> str:
     last = store.list_runs(limit=1)
     state = {"agent": cfg.agent.name, "last_run": last[0] if last else None, "pending_approvals": store.list_approvals("pending")[:20],
-             "tasks": [t["name"] for t in brain.list_tasks(cfg)], "collections": {c: len(store.list(c)) for c in store.collections()},
+             "tasks": [t["name"] for t in brain.list_tasks(cfg)], "collections": store.collection_counts(),
              "budget": store.month_budget()}
     system = brain.system_prefix(cfg) + ("\n\n# Task\nAnswer the owner's question about your current state using ONLY the state given. "
                                          "Be terse. You cannot take actions; point to the approvals queue or a task instead.")
@@ -101,6 +102,34 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
             raise HTTPException(401, "X-Agent-Token required")
 
     app = FastAPI(title=f"{cfg.agent.name} — Mission Control", version=cfg.agent.version)
+
+    # Read micro-cache: identical GETs within CACHE_TTL_S share one computed response. A dashboard fan-out or 500 pollers then cost one
+    # query per second instead of 500, and a write (any non-GET) clears the cache so nothing stale outlives the next action.
+    cache: dict[str, tuple[float, int, bytes, str]] = {}
+    cache_lock = threading.Lock()
+    CACHE_TTL_S = float(os.environ.get("AGENTKIT_MC_CACHE_TTL", "1.0"))
+
+    @app.middleware("http")
+    async def read_cache(request, call_next):
+        key = str(request.url)
+        cacheable = request.method == "GET" and (request.url.path.startswith("/api/") or request.url.path.startswith("/.well-known/")) and CACHE_TTL_S > 0
+        if cacheable:
+            hit = cache.get(key)
+            if hit and time.time() - hit[0] < CACHE_TTL_S:
+                return Response(content=hit[2], status_code=hit[1], media_type=hit[3], headers={"X-Cache": "hit"})
+        response = await call_next(request)
+        if not cacheable:
+            if request.method != "GET":
+                with cache_lock:
+                    cache.clear()
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        if response.status_code == 200:
+            with cache_lock:
+                if len(cache) > 512:
+                    cache.clear()
+                cache[key] = (time.time(), response.status_code, body, response.media_type or "application/json")
+        return Response(content=body, status_code=response.status_code, media_type=response.media_type, headers={k: v for k, v in response.headers.items() if k.lower() not in ("content-length",)})
 
     @app.get("/")
     def index():
@@ -136,13 +165,13 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
             running, progress = True, {"phase": ext.get("phase"), "message": "(started outside Mission Control)", "done": 0, "total": 0, "run_id": ext["id"]}
         last = [r for r in store.list_runs(limit=20) if r["status"] != "running" and not str(r.get("mode", "")).startswith("fault:")][:1]
         return {"agent": cfg.agent.__dict__, "running": running, "progress": progress, "last_run": last[0] if last else None,
-                "pending_approvals": len(store.list_approvals("pending")), "budget": {**store.month_budget(), **{f"cap_{k}": v for k, v in cfg.limits.__dict__.items()}},
+                "pending_approvals": store.count_approvals("pending"), "budget": {**store.month_budget(), **{f"cap_{k}": v for k, v in cfg.limits.__dict__.items()}},
                 "model": {"backend": cfg.model.backend, "name": {"ollama": cfg.model.ollama_model, "claude": cfg.model.claude_model,
                                                                   "openai_compat": cfg.model.openai_model}.get(cfg.model.backend, "none")},
                 "tools": cfg.tools_allowed, "approval_actions": cfg.approval_actions, "auth_required": bool(token),
                 "tasks": [{k: v for k, v in t.items() if k != "body"} for t in brain.list_tasks(cfg)],
                 "panels": [{"name": p["name"], "collection": p["collection"], "columns": p.get("columns", []), "actions": p.get("actions", [])} for p in panels],
-                "collections": {c: len(store.list(c)) for c in store.collections()}, "ledger": ledger.verify()}
+                "collections": store.collection_counts(), "ledger": ledger.verify_cached()}
 
     @app.get("/api/runs")
     def runs(limit: int = 50):
@@ -158,7 +187,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
 
     @app.post("/api/run", dependencies=[Depends(require_token)])
     def start_run(req: RunRequest):
-        if state["thread"] and state["thread"].is_alive():
+        if (state["thread"] and state["thread"].is_alive()) or store.running_run():   # the DB check also covers other worker processes
             raise HTTPException(409, "a run is already in progress")
         w = worker_cls(cfg, store, ledger)
         t = threading.Thread(target=w.run, kwargs={"task": req.task, "input_text": req.input}, daemon=True)
@@ -190,8 +219,8 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
                 for t in allowed_tools(cfg).values()] + [{"name": n, "available": False} for n in cfg.tools_allowed if n not in REGISTRY]
 
     @app.get("/api/approvals")
-    def list_approvals(status: str | None = None):
-        rows = store.list_approvals(status)
+    def list_approvals(status: str | None = None, limit: int = Query(200, le=2000)):
+        rows = store.list_approvals(status, limit=limit)
         for a in rows:
             a["description"] = approvals.describe(a["action"], a["target"], a.get("payload"))
         return rows
@@ -212,7 +241,7 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
             raise HTTPException(400, str(e))
 
     @app.get("/api/activity")
-    def activity(limit: int = 200, run: str | None = None):
+    def activity(limit: int = Query(200, le=5000), run: str | None = None):
         return ledger.read(limit=limit, run_id=run)
 
     @app.get("/api/activity/verify")
@@ -276,10 +305,16 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         pol = openshell.policy_for(cfg)
         return {"policy": pol, "yaml": openshell.to_yaml(pol), "launch": openshell.launch_doc(cfg)}
 
+    _health_cache: dict = {"at": 0.0, "value": None}
+
     @app.get("/api/health")
     def health():
+        """Health aggregates runs + ledger + doctor; it is served from a 10 s cache so a dashboard fan-out cannot stack full recomputes."""
         from .health import health_report
-        return health_report(cfg)
+        import time as _t
+        if _health_cache["value"] is None or _t.time() - _health_cache["at"] > 10:
+            _health_cache.update(value=health_report(cfg), at=_t.time())
+        return _health_cache["value"]
 
     @app.get("/api/evals")
     def evals_last():
@@ -401,8 +436,8 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
 
     # ---- documents (agent-specific panels)
     @app.get("/api/docs/{collection}")
-    def docs_list(collection: str, limit: int = Query(500, le=5000)):
-        return store.list(collection, limit=limit)
+    def docs_list(collection: str, limit: int = Query(500, le=5000), status: str | None = None):
+        return store.list(collection, limit=limit, **({"status": status} if status else {}))
 
     @app.get("/api/docs/{collection}/{doc_id}")
     def docs_get(collection: str, doc_id: str):
@@ -438,3 +473,11 @@ def create_app(cfg: Config, worker_cls, panels: list[dict] | None = None) -> Fas
         raise HTTPException(404, "no handler for this panel action")
 
     return app
+
+
+def app_from_env() -> FastAPI:
+    """uvicorn factory for multi-worker serving: `AGENTKIT_ROOT` names the agent folder. Run state lives in the store, so any worker can
+    answer status and only one can start a run; the in-memory progress/cache are per worker by design."""
+    from .cli import load_agent
+    cfg, worker_cls, panels = load_agent(Path(os.environ["AGENTKIT_ROOT"]))
+    return create_app(cfg, worker_cls, panels)

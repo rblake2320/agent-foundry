@@ -63,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--time")
     m = sub.add_parser("mc", help="start Mission Control")
     m.add_argument("--port", type=int)
+    m.add_argument("--workers", type=int, default=1, help="uvicorn worker processes (reads scale out; runs stay single)")
     ev = sub.add_parser("evidence", help="signed evidence bundle: build | verify <dir> | show (identity + latest bundle)")
     ev.add_argument("action", nargs="?", choices=["build", "verify", "show"], default="build")
     ev.add_argument("path", nargs="?")
@@ -159,7 +160,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "mc":
         import uvicorn
         from .mc import create_app
-        uvicorn.run(create_app(cfg, worker_cls, panels), host=cfg.mc_host, port=args.port or cfg.mc_port, log_level="info")
+        if args.workers > 1:
+            import os
+            os.environ["AGENTKIT_ROOT"] = str(root)
+            uvicorn.run("agentkit.mc:app_from_env", factory=True, workers=args.workers, host=cfg.mc_host, port=args.port or cfg.mc_port, log_level="info")
+        else:
+            uvicorn.run(create_app(cfg, worker_cls, panels), host=cfg.mc_host, port=args.port or cfg.mc_port, log_level="info")
         return 0
     if args.cmd == "evidence":
         from . import evidence

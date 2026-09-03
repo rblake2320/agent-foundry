@@ -1,0 +1,6 @@
+[
+  {"name": "agent-seller-mc", "url": "http://127.0.0.1:8111/api/status", "heal": "systemctl --user restart openshell-forward-agent-seller", "heal_wait": 8},
+  {"name": "openshell-gateway", "cmd": "openshell gateway info >/dev/null", "timeout": 30},
+  {"name": "agent-seller-sandbox", "cmd": "openshell sandbox list 2>/dev/null | grep -E '^agent-seller ' | grep -q Ready", "timeout": 30},
+  {"name": "ollama", "url": "http://127.0.0.1:11434/api/tags"}
+]

@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS docs (
   collection TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   PRIMARY KEY (collection, id)
 );
+CREATE INDEX IF NOT EXISTS docs_coll_updated ON docs(collection, updated_at DESC);
+CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status, id DESC);
+CREATE INDEX IF NOT EXISTS runs_started ON runs(started_at DESC);
 """
 
 
@@ -46,6 +49,8 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.conn() as c:
+            c.execute("PRAGMA journal_mode=WAL")        # readers never block the writer; the writer never blocks readers
+            c.execute("PRAGMA synchronous=NORMAL")
             c.executescript(SCHEMA)
             if "mandate" not in [r[1] for r in c.execute("PRAGMA table_info(approvals)")]:
                 c.execute("ALTER TABLE approvals ADD COLUMN mandate TEXT")
@@ -54,6 +59,7 @@ class Store:
     def conn(self):
         c = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         c.row_factory = sqlite3.Row
+        c.execute("PRAGMA busy_timeout=30000")
         try:
             yield c
             c.commit()
@@ -96,10 +102,15 @@ class Store:
                             (run_id, now(), action, target, json.dumps(payload or {}, default=str), rationale))
             return int(cur.lastrowid)
 
-    def list_approvals(self, status: str | None = None) -> list[dict]:
+    def list_approvals(self, status: str | None = None, limit: int = 500) -> list[dict]:
         with self.conn() as c:
-            q = "SELECT * FROM approvals" + (" WHERE status=?" if status else "") + " ORDER BY id DESC"
-            return [_row(r) for r in c.execute(q, (status,) if status else ())]
+            q = "SELECT * FROM approvals" + (" WHERE status=?" if status else "") + " ORDER BY id DESC LIMIT ?"
+            return [_row(r) for r in c.execute(q, (status, limit) if status else (limit,))]
+
+    def count_approvals(self, status: str | None = None) -> int:
+        with self.conn() as c:
+            q = "SELECT count(*) FROM approvals" + (" WHERE status=?" if status else "")
+            return int(c.execute(q, (status,) if status else ()).fetchone()[0])
 
     def get_approval(self, aid: int) -> dict | None:
         with self.conn() as c:
@@ -149,14 +160,24 @@ class Store:
             return {"id": r["id"], "_created_at": r["created_at"], "_updated_at": r["updated_at"], **json.loads(r["body"])}
 
     def list(self, collection: str, limit: int = 1000, **where) -> list[dict]:
+        """Filters are applied in SQL (json_extract) so LIMIT bounds the result, not the scan window."""
+        clauses, params = ["collection=?"], [collection]
+        for k, v in where.items():
+            if not k.replace("_", "").isalnum():
+                raise ValueError(f"bad filter field {k!r}")
+            clauses.append(f"json_extract(body, '$.{k}') = ?")
+            params.append(v if isinstance(v, (int, float, str)) else json.dumps(v))
         with self.conn() as c:
-            rows = c.execute("SELECT * FROM docs WHERE collection=? ORDER BY updated_at DESC LIMIT ?", (collection, limit))
-            out = []
-            for r in rows:
-                d = {"id": r["id"], "_created_at": r["created_at"], "_updated_at": r["updated_at"], **json.loads(r["body"])}
-                if all(d.get(k) == v for k, v in where.items()):
-                    out.append(d)
-            return out
+            rows = c.execute(f"SELECT * FROM docs WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?", (*params, limit))
+            return [{"id": r["id"], "_created_at": r["created_at"], "_updated_at": r["updated_at"], **json.loads(r["body"])} for r in rows]
+
+    def count(self, collection: str) -> int:
+        with self.conn() as c:
+            return int(c.execute("SELECT count(*) FROM docs WHERE collection=?", (collection,)).fetchone()[0])
+
+    def collection_counts(self) -> dict[str, int]:
+        with self.conn() as c:
+            return {r["collection"]: int(r["n"]) for r in c.execute("SELECT collection, count(*) AS n FROM docs GROUP BY collection ORDER BY collection")}
 
     def delete(self, collection: str, doc_id: str) -> None:
         with self.conn() as c:
